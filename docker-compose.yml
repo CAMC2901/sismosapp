@@ -1,0 +1,394 @@
+# ==============================================================================
+# docker-compose.yml — SismoWatch (SuperApp)
+# Arquitectura Medallion Batch/Micro-batch + Capa de Servicio + IA Local/Cloud
+# Presupuesto total de RAM acotado a ~9.2 GB para host de 16 GB RAM sin GPU.
+# ==============================================================================
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./airflow
+    dockerfile: Dockerfile
+  image: sismowatch-airflow:2.10.4
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-sismowatch_master}:${POSTGRES_PASSWORD:-sw_master_local_9812}@postgres:5432/airflow_meta
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-sw_airflow_web_secret_9812_local}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    PYTHONPATH: /opt/airflow/include:/opt/airflow
+    # Variables del proyecto para los DAGs y Spark
+    POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+    POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    POSTGRES_DB: ${POSTGRES_DB:-sismowatch}
+    POSTGRES_USER: ${POSTGRES_USER:-sismowatch_master}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sw_master_local_9812}
+    DB_INGEST_USER: ${DB_INGEST_USER:-ingest_role}
+    DB_INGEST_PASSWORD: ${DB_INGEST_PASSWORD:-sw_ingest_local_9812}
+    DB_TRANSFORM_USER: ${DB_TRANSFORM_USER:-transform_role}
+    DB_TRANSFORM_PASSWORD: ${DB_TRANSFORM_PASSWORD:-sw_transform_local_9812}
+    DB_AI_USER: ${DB_AI_USER:-ai_role}
+    DB_AI_PASSWORD: ${DB_AI_PASSWORD:-sw_ai_local_9812}
+    DB_READER_USER: ${DB_READER_USER:-reader_role}
+    DB_READER_PASSWORD: ${DB_READER_PASSWORD:-sw_reader_local_9812}
+    DB_API_RW_USER: ${DB_API_RW_USER:-api_rw_role}
+    DB_API_RW_PASSWORD: ${DB_API_RW_PASSWORD:-sw_apirw_local_9812}
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sw_minio_local_9812}
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+    MINIO_BUCKET_BRONZE: ${MINIO_BUCKET_BRONZE:-bronze}
+    MINIO_BUCKET_SILVER: ${MINIO_BUCKET_SILVER:-silver}
+    MINIO_BUCKET_GOLD: ${MINIO_BUCKET_GOLD:-gold}
+    LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+    GROQ_API_KEY: ${GROQ_API_KEY:-}
+    GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+    OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-qwen2.5:3b}
+    OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-bge-m3}
+    ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://api:8000/api/internal/webhook-sink}
+    FRESHNESS_MAX_MINUTES: ${FRESHNESS_MAX_MINUTES:-180}
+    VOLUME_MIN: ${VOLUME_MIN:-0}
+    VOLUME_MAX: ${VOLUME_MAX:-25000}
+    INVALID_RATIO_MAX: ${INVALID_RATIO_MAX:-0.20}
+    USGS_FEED_URL: ${USGS_FEED_URL:-https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson}
+    USGS_QUERY_URL: ${USGS_QUERY_URL:-https://earthquake.usgs.gov/fdsnws/event/1/query}
+    BACKFILL_DEFAULT_DAYS: ${BACKFILL_DEFAULT_DAYS:-30}
+    BACKFILL_MIN_MAGNITUDE: ${BACKFILL_MIN_MAGNITUDE:-2.5}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/include:/opt/airflow/include
+    - ./airflow/tests:/opt/airflow/tests
+    - airflow_logs:/opt/airflow/logs
+  networks:
+    - sismowatch_net
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sismowatch-postgres
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sismowatch_master}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sw_master_local_9812}
+      POSTGRES_DB: ${POSTGRES_DB:-sismowatch}
+      DB_INGEST_PASSWORD: ${DB_INGEST_PASSWORD:-sw_ingest_local_9812}
+      DB_TRANSFORM_PASSWORD: ${DB_TRANSFORM_PASSWORD:-sw_transform_local_9812}
+      DB_AI_PASSWORD: ${DB_AI_PASSWORD:-sw_ai_local_9812}
+      DB_READER_PASSWORD: ${DB_READER_PASSWORD:-sw_reader_local_9812}
+      DB_API_RW_PASSWORD: ${DB_API_RW_PASSWORD:-sw_apirw_local_9812}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminSismo2026!}
+      VIEWER_USERNAME: ${VIEWER_USERNAME:-viewer}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD:-ViewerSismo2026!}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sismowatch_master} -d ${POSTGRES_DB:-sismowatch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sismowatch_net
+
+  minio:
+    image: alpine/minio:RELEASE.2025-10-15T17-29-55Z
+    container_name: sismowatch-minio
+    restart: unless-stopped
+    mem_limit: 512m
+    command: server /home/minio/data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sw_minio_local_9812}
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio_data:/home/minio
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sismowatch_net
+
+  minio-init:
+    <<: *airflow-common
+    container_name: sismowatch-minio-init
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        python3 -c "
+        import os, boto3
+        from botocore.exceptions import ClientError
+        s3 = boto3.client(
+            's3',
+            endpoint_url=os.getenv('MINIO_ENDPOINT', 'http://minio:9000'),
+            aws_access_key_id=os.getenv('MINIO_ROOT_USER'),
+            aws_secret_access_key=os.getenv('MINIO_ROOT_PASSWORD'),
+            region_name='us-east-1',
+        )
+        existing = {b['Name'] for b in s3.list_buckets().get('Buckets', [])}
+        for bucket in [os.getenv('MINIO_BUCKET_BRONZE', 'bronze'), os.getenv('MINIO_BUCKET_SILVER', 'silver'), os.getenv('MINIO_BUCKET_GOLD', 'gold')]:
+            if bucket not in existing:
+                s3.create_bucket(Bucket=bucket)
+                print(f'Bucket creado: {bucket}')
+            else:
+                print(f'Bucket ya existe: {bucket}')
+        "
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: sismowatch-airflow-init
+    restart: "no"
+    mem_limit: 1024m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "$${AIRFLOW_ADMIN_USER:-sismowatch_admin}" \
+          --firstname "SismoWatch" \
+          --lastname "Admin" \
+          --role Admin \
+          --email "$${AIRFLOW_ADMIN_EMAIL:-admin@superapp.local}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD:-sw_airflow_admin_9812}" || true
+        airflow connections add 'sismowatch_postgres' \
+          --conn-type 'postgres' \
+          --conn-host "$${POSTGRES_HOST:-postgres}" \
+          --conn-schema "$${POSTGRES_DB:-sismowatch}" \
+          --conn-login "$${DB_TRANSFORM_USER:-transform_role}" \
+          --conn-password "$${DB_TRANSFORM_PASSWORD:-sw_transform_local_9812}" \
+          --conn-port 5432 || true
+        airflow connections add 'sismowatch_minio' \
+          --conn-type 'aws' \
+          --conn-login "$${MINIO_ROOT_USER:-sismowatch_minio}" \
+          --conn-password "$${MINIO_ROOT_PASSWORD:-sw_minio_local_9812}" \
+          --conn-extra "{\"endpoint_url\": \"$${MINIO_ENDPOINT:-http://minio:9000}\"}" || true
+        airflow connections add 'airflow_rest_api' \
+          --conn-type 'http' \
+          --conn-host 'airflow-webserver' \
+          --conn-port 8080 \
+          --conn-login "$${AIRFLOW_ADMIN_USER:-sismowatch_admin}" \
+          --conn-password "$${AIRFLOW_ADMIN_PASSWORD:-sw_airflow_admin_9812}" || true
+        airflow connections add 'alert_webhook' \
+          --conn-type 'http' \
+          --conn-host "$${ALERT_WEBHOOK_URL:-http://api:8000/api/internal/webhook-sink}" || true
+        echo "Airflow inicializado con éxito."
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-sismowatch_admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-sw_airflow_admin_9812}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@superapp.local}
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: sismowatch-airflow-webserver
+    restart: unless-stopped
+    mem_limit: 1536m
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: sismowatch-airflow-scheduler
+    restart: unless-stopped
+    mem_limit: 3072m
+    command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8974/health || pgrep -f 'airflow scheduler' > /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  ollama:
+    image: ollama/ollama:0.3.14
+    container_name: sismowatch-ollama
+    restart: unless-stopped
+    mem_limit: 2560m
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-2m}
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    networks:
+      - sismowatch_net
+
+  ollama-init:
+    image: ollama/ollama:0.3.14
+    container_name: sismowatch-ollama-init
+    restart: "no"
+    mem_limit: 512m
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-qwen2.5:3b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-bge-m3}
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Descargando modelos requeridos en Ollama (bge-m3 y qwen2.5:3b)...' &&
+      ollama pull $${OLLAMA_EMBED_MODEL:-bge-m3} &&
+      ollama pull $${OLLAMA_FALLBACK_MODEL:-qwen2.5:3b} &&
+      echo 'Modelos Ollama listos.'
+      "
+    networks:
+      - sismowatch_net
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    image: sismowatch-api:1.0.0
+    container_name: sismowatch-api
+    restart: unless-stopped
+    mem_limit: 512m
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-sismowatch}
+      DB_READER_USER: ${DB_READER_USER:-reader_role}
+      DB_READER_PASSWORD: ${DB_READER_PASSWORD:-sw_reader_local_9812}
+      DB_API_RW_USER: ${DB_API_RW_USER:-api_rw_role}
+      DB_API_RW_PASSWORD: ${DB_API_RW_PASSWORD:-sw_apirw_local_9812}
+      DB_AI_USER: ${DB_AI_USER:-ai_role}
+      DB_AI_PASSWORD: ${DB_AI_PASSWORD:-sw_ai_local_9812}
+      JWT_SECRET: ${JWT_SECRET:-sw_jwt_secret_key_superapp_sismowatch_2026_local_only}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-120}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminSismo2026!}
+      VIEWER_USERNAME: ${VIEWER_USERNAME:-viewer}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD:-ViewerSismo2026!}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      AIRFLOW_API_URL: ${AIRFLOW_API_URL:-http://airflow-webserver:8080/api/v1}
+      AIRFLOW_API_USER: ${AIRFLOW_API_USER:-sismowatch_admin}
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-sw_airflow_admin_9812}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-qwen2.5:3b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-bge-m3}
+      AI_CACHE_TTL: ${AI_CACHE_TTL:-3600}
+      FRESHNESS_MAX_MINUTES: ${FRESHNESS_MAX_MINUTES:-180}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sismowatch_net
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: sismowatch-web:1.0.0
+    container_name: sismowatch-web
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "3000:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sismowatch_net
+
+  backfill-init:
+    <<: *airflow-common
+    container_name: sismowatch-backfill-init
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+      airflow-scheduler:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        python3 /opt/airflow/include/ingestion/auto_backfill_trigger.py
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW_API_URL: ${AIRFLOW_API_URL:-http://airflow-webserver:8080/api/v1}
+      AIRFLOW_API_USER: ${AIRFLOW_API_USER:-sismowatch_admin}
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-sw_airflow_admin_9812}
+
+networks:
+  sismowatch_net:
+    name: sismowatch_internal_net
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: sismowatch_postgres_data
+  minio_data:
+    name: sismowatch_minio_data
+  ollama_data:
+    name: sismowatch_ollama_data
+  airflow_logs:
+    name: sismowatch_airflow_logs
