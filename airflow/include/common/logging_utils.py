@@ -60,3 +60,4 @@ def log_event(
     }
     msg = json.dumps(record, ensure_ascii=False, default=str)
     getattr(logger, level.lower(), logger.info)(msg)
+

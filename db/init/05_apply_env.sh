@@ -25,3 +25,4 @@ EOSQL
 # Crear base de datos separada para los metadatos internos de Apache Airflow
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -tc "SELECT 1 FROM pg_database WHERE datname = 'airflow_meta'" | grep -q 1 || \
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -c "CREATE DATABASE airflow_meta OWNER \"$POSTGRES_USER\";"
+

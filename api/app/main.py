@@ -70,3 +70,4 @@ async def internal_webhook_sink(payload: Dict[str, Any]) -> Dict[str, Any]:
         "dag_id": payload.get("dag_id"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+

@@ -98,3 +98,4 @@ def get_db_conn(role: str = "reader", timeout: int = 5) -> PgConnection:
         raise DatabaseUnavailableError(
             "El servicio de base de datos PostgreSQL no se encuentra disponible temporalmente."
         ) from exc
+

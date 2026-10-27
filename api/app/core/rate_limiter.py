@@ -36,3 +36,4 @@ def rate_limit_dependency(scope: str, max_requests: int = 30, window_seconds: in
         rate_limiter.check(f"{scope}:{client_ip}", max_requests=max_requests, window_seconds=window_seconds)
 
     return _dep
+

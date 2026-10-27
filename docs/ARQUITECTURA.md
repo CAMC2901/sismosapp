@@ -102,6 +102,7 @@ flowchart LR
 | **IA y RAG** | Groq API + Ollama (`qwen2.5:3b` y `bge-m3`) | Alta velocidad de inferencia en la nube con Groq y autonomía local sin GPU con modelos ligeros en Ollama (`OLLAMA_KEEP_ALIVE=2m`). |
 | **Backend** | FastAPI `0.115.4` + Pydantic v2 + JWT + `bcrypt` | Asíncrono nativo para SSE (`/api/stream`), validación estricta de contratos y documentación OpenAPI automática en `/docs`. |
 | **Frontend** | React 18 + TypeScript + Vite + Tailwind + Leaflet + Recharts + Nginx | Interfaz reactiva temática de sismología con mapa geoespacial interactivo, gráficas analíticas y huella de RAM mínima (< 50 MB en Nginx). |
+| **Gobernanza y Linaje** | OpenMetadata `1.5.11` + Elasticsearch `8.11.4` | Catálogo centralizado de datos, diccionario de esquemas y columnas (`raw`, `staging`, `curated`), contenedores S3 (`bronze`, `silver`, `gold`), pipelines de Airflow, linaje visual extremo a extremo y glosario de negocio. |
 
 ---
 
@@ -168,3 +169,4 @@ MinIO (almacenamiento de objetos S3 en Parquet) es óptimo para escaneos analít
 4. **Gestión de Secretos**: Reemplazar variables de entorno por **HashiCorp Vault** o **AWS Secrets Manager** configurado como *Secrets Backend* de Airflow y FastAPI.
 5. **Observabilidad Unificada**: Exportar métricas con **OpenTelemetry / StatsD** hacia Prometheus + Grafana y centralizar los logs JSON estructurados en Loki o Elasticsearch.
 6. **Streaming Real (Kafka / Flink)**: Únicamente si la fuente de datos cambiara de un feed HTTP publicado cada minuto/hora a telemetría directa de estaciones sismográficas en tiempo real (sub-segundo).
+

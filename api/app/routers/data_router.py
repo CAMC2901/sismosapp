@@ -29,9 +29,20 @@ router = APIRouter(prefix="/api", tags=["Datos Sísmicos y Reportes"])
 
 
 @router.get("/kpis", response_model=KpisResponse)
-async def get_kpis(_user: UserInfo = Depends(require_viewer)) -> KpisResponse:
-    """Devuelve los 6 KPIs ejecutivos desde `curated`."""
-    return fetch_kpis()
+async def get_kpis(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    min_mag: Optional[float] = Query(default=None, ge=-2.0, le=10.0),
+    region: Optional[str] = Query(default=None, max_length=120),
+    _user: UserInfo = Depends(require_viewer),
+) -> KpisResponse:
+    """Devuelve los 6 KPIs ejecutivos desde `curated`, sincronizados con los filtros activos."""
+    return fetch_kpis(
+        start_date=start_date,
+        end_date=end_date,
+        min_mag=min_mag,
+        region=region,
+    )
 
 
 @router.get("/events", response_model=PaginatedEventsResponse)
@@ -184,3 +195,4 @@ async def stream_seismic_events(
             "X-Accel-Buffering": "no",
         },
     )
+

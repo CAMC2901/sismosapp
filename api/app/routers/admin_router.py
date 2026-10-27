@@ -46,3 +46,4 @@ async def post_admin_regenerate_report(
 ) -> AdminActionResponse:
     """Regenera el reporte ejecutivo diario de IA con verificación de cifras SQL."""
     return regenerate_daily_report_via_api()
+

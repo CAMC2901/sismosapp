@@ -1,5 +1,5 @@
 """
-Router del Agente Conversacional (`/api/agent/chat`) con cascada de 4 niveles y rate limiting.
+Router del Agente Conversacional (`/api/agent/chat`) con cascada de 4 niveles, RBAC por rol y rate limiting.
 """
 from fastapi import APIRouter, Depends
 from app.agent.orchestrator import process_agent_chat
@@ -19,5 +19,5 @@ async def chat_with_agent(
     payload: ChatRequest,
     user: UserInfo = Depends(require_viewer),
 ) -> ChatResponse:
-    """Procesa la pregunta del usuario en cascada (Nivel 0 → Nivel 1 → Nivel 2 → Nivel 3)."""
-    return process_agent_chat(question=payload.question, username=user.username)
+    """Procesa la pregunta del usuario en cascada (Nivel 0 → Nivel 1 → Nivel 2 → Nivel 3) aislando el rol."""
+    return process_agent_chat(question=payload.question, username=user.username, role=user.role)

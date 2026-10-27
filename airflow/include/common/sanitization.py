@@ -71,3 +71,4 @@ def delimit_untrusted_data(text: str, tag: str = "dato_geofisico") -> str:
     """
     safe = sanitize_place(text)
     return f"<{tag}>{safe}</{tag}>"
+

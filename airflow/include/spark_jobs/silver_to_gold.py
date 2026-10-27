@@ -118,3 +118,4 @@ def run_silver_to_gold(run_id: str = "manual") -> Dict[str, Any]:
     }
     log_event(logger, "info", "silver_to_gold_completed", run_id, summary)
     return summary
+

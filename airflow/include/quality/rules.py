@@ -255,3 +255,4 @@ def deduplicate_silver_rows(
                 )
 
     return list(best_by_id.values()), rejections
+

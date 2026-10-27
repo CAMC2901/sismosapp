@@ -258,3 +258,4 @@ REVOKE ALL ON ALL TABLES IN SCHEMA staging FROM api_rw_role;
 GRANT SELECT ON ALL TABLES IN SCHEMA curated TO api_rw_role;
 GRANT INSERT, UPDATE, DELETE ON curated.ai_cache, curated.chat_sessions, curated.ai_runs TO api_rw_role;
 GRANT USAGE, SELECT ON SEQUENCE curated.chat_sessions_id_seq, curated.ai_runs_id_seq TO api_rw_role;
+

@@ -294,3 +294,4 @@ def index_knowledge_base_chunks(
         return summary
     finally:
         conn.close()
+

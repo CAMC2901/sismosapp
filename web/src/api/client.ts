@@ -12,9 +12,17 @@ export interface UserSession {
 }
 
 export interface KpisData {
+  total_filtered_events?: number;
   events_24h: number;
   max_magnitude: number;
   avg_magnitude: number;
+  min_magnitude?: number;
+  avg_depth_km?: number;
+  max_depth_km?: number;
+  strong_events_count?: number;
+  shallow_events_count?: number;
+  most_active_region?: string;
+  most_active_region_count?: number;
   tsunami_alerts: number;
   quality_score: number;
   last_updated: string | null;
@@ -57,15 +65,31 @@ export interface TimeseriesStats {
     mag_promedio: number;
     tsunami: number;
   }>;
+  daily_trend?: Array<{
+    fecha: string;
+    conteo: number;
+    mag_max: number;
+    mag_promedio: number;
+    fuertes_m5: number;
+  }>;
   magnitude_distribution: Array<{
     rango: string;
     conteo: number;
+  }>;
+  depth_distribution?: Array<{
+    categoria: string;
+    rango_km: string;
+    conteo: number;
+    porcentaje: number;
+    mag_promedio: number;
+    mag_max: number;
   }>;
   top_regions: Array<{
     region: string;
     conteo: number;
     mag_max: number;
     mag_promedio: number;
+    prof_promedio?: number;
   }>;
 }
 
@@ -263,8 +287,21 @@ export const apiClient = {
     return session;
   },
 
-  getKpis(): Promise<KpisData> {
-    return apiRequest<KpisData>('/api/kpis');
+  getKpis(params?: {
+    start_date?: string;
+    end_date?: string;
+    min_mag?: number;
+    region?: string;
+  }): Promise<KpisData> {
+    const q = new URLSearchParams();
+    if (params?.start_date) q.set('start_date', params.start_date);
+    if (params?.end_date) q.set('end_date', params.end_date);
+    if (params?.min_mag !== undefined && !Number.isNaN(params.min_mag)) {
+      q.set('min_mag', String(params.min_mag));
+    }
+    if (params?.region) q.set('region', params.region);
+    const qs = q.toString();
+    return apiRequest<KpisData>(qs ? `/api/kpis?${qs}` : '/api/kpis');
   },
 
   getEvents(params: {
@@ -366,3 +403,4 @@ export const apiClient = {
     });
   },
 };
+

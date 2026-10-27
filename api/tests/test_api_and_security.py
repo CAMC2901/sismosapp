@@ -111,10 +111,14 @@ def test_agent_cache_key_and_number_verification():
     q2 = normalize_question("cuales son los kpis de las ultimas 24h")
     assert q1 == q2
 
-    # Si cambia data_version, el hash de caché cambia automáticamente
-    k_v1 = _compute_cache_key(q1, "20261027T120000Z")
-    k_v2 = _compute_cache_key(q1, "20261027T120500Z")
+    # Si cambia data_version o el rol, el hash de caché cambia automáticamente
+    k_v1 = _compute_cache_key(q1, "20261027T120000Z", role="viewer")
+    k_v2 = _compute_cache_key(q1, "20261027T120500Z", role="viewer")
+    k_admin = _compute_cache_key(q1, "20261027T120000Z", role="admin")
     assert k_v1 != k_v2
+    assert k_v1 != k_admin
 
     assert verify_numbers_in_response("Se detectaron 25 sismos con magnitud máxima 5.9", [25.0, 5.9]) is True
     assert verify_numbers_in_response("Se detectaron 80 sismos con magnitud máxima 5.9", [25.0, 5.9]) is False
+
+

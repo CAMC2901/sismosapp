@@ -56,6 +56,9 @@ x-airflow-common: &airflow-common
     USGS_QUERY_URL: ${USGS_QUERY_URL:-https://earthquake.usgs.gov/fdsnws/event/1/query}
     BACKFILL_DEFAULT_DAYS: ${BACKFILL_DEFAULT_DAYS:-30}
     BACKFILL_MIN_MAGNITUDE: ${BACKFILL_MIN_MAGNITUDE:-2.5}
+    OPENMETADATA_URL: ${OPENMETADATA_URL:-http://openmetadata-server:8585/api}
+    OPENMETADATA_ADMIN_EMAIL: ${OPENMETADATA_ADMIN_EMAIL:-admin@open-metadata.org}
+    OPENMETADATA_ADMIN_PASSWORD: ${OPENMETADATA_ADMIN_PASSWORD:-admin}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/include:/opt/airflow/include
@@ -378,6 +381,91 @@ services:
       AIRFLOW_API_USER: ${AIRFLOW_API_USER:-sismowatch_admin}
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-sw_airflow_admin_9812}
 
+  openmetadata-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.4
+    container_name: sismowatch-om-elasticsearch
+    restart: unless-stopped
+    mem_limit: 1280m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+    volumes:
+      - om_es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sismowatch_net
+
+  openmetadata-server:
+    image: openmetadata/server:1.5.11
+    container_name: sismowatch-openmetadata
+    restart: unless-stopped
+    mem_limit: 1536m
+    ports:
+      - "8585:8585"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openmetadata-elasticsearch:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        ./bootstrap/openmetadata-ops.sh migrate
+        exec /openmetadata-start.sh
+    environment:
+      DB_DRIVER_CLASS: org.postgresql.Driver
+      DB_SCHEME: postgresql
+      DB_USE_SSL: "false"
+      DB_USER: ${OM_DB_USER:-openmetadata_user}
+      DB_USER_PASSWORD: ${OM_DB_PASSWORD:-openmetadata_password}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      OM_DATABASE: ${OM_DB_NAME:-openmetadata_db}
+      SEARCH_TYPE: elasticsearch
+      ELASTICSEARCH_HOST: openmetadata-elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_SCHEME: http
+      SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+      PIPELINE_SERVICE_CLIENT_CLASS_NAME: "org.openmetadata.service.clients.pipeline.airflow.AirflowRESTClient"
+      AIRFLOW_HOST: http://airflow-webserver:8080
+      AIRFLOW_USERNAME: ${AIRFLOW_ADMIN_USER:-sismowatch_admin}
+      AIRFLOW_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-sw_airflow_admin_9812}
+      HEAP_OPTS: "-Xms512m -Xmx1024m"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8585/api/v1/system/version || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    networks:
+      - sismowatch_net
+
+  openmetadata-init:
+    <<: *airflow-common
+    container_name: sismowatch-openmetadata-init
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openmetadata-server:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        python3 /opt/airflow/include/governance/openmetadata_sync.py
+    environment:
+      <<: *airflow-common-env
+
 networks:
   sismowatch_net:
     name: sismowatch_internal_net
@@ -392,3 +480,5 @@ volumes:
     name: sismowatch_ollama_data
   airflow_logs:
     name: sismowatch_airflow_logs
+  om_es_data:
+    name: sismowatch_om_es_data

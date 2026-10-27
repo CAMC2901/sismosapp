@@ -14,3 +14,4 @@ REGLAS ESTRICTAS DE SEGURIDAD Y VERACIDAD:
   "analisis_anomalias": "string explicando las anomalías detectadas o indicando actividad normal",
   "recomendaciones": "string con recomendaciones de monitoreo"
 }
+

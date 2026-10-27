@@ -233,3 +233,4 @@ def detect_and_store_anomalies(
         return detected_anomalies
     finally:
         conn.close()
+

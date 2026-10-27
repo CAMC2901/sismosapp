@@ -12,6 +12,8 @@ from app.core.config import get_db_conn, get_settings
 from app.models.schemas import (
     AdminActionResponse,
     DailyReportItem,
+    DailyTrendPoint,
+    DepthDistributionPoint,
     HourlyPoint,
     KpisResponse,
     MagnitudeDistributionPoint,
@@ -57,45 +59,95 @@ def get_current_data_version(conn: Any = None) -> str:
             conn.close()
 
 
-def fetch_kpis() -> KpisResponse:
+def fetch_kpis(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    min_mag: Optional[float] = None,
+    region: Optional[str] = None,
+) -> KpisResponse:
     """
-    Calcula los 6 KPIs obligatorios desde `curated`:
-    1. Eventos en 24h (si las últimas 24h tienen 0 y existe histórico, informa las 24h reales).
-    2. Magnitud máxima (en la ventana de 24h, o global si 24h es 0).
-    3. Magnitud promedio.
-    4. Eventos con alerta de tsunami.
+    Calcula los 6 KPIs obligatorios desde `curated` sincronizados al 100% con los filtros activos
+    (`start_date`, `end_date`, `min_mag`, `region`) de la tabla, el mapa y las gráficas:
+    1. Eventos en 24h (dentro de los filtros activos) y total del filtro.
+    2. Magnitud máxima del conjunto filtrado.
+    3. Magnitud promedio del conjunto filtrado.
+    4. Eventos con alerta de tsunami del conjunto filtrado.
     5. Puntaje de calidad más reciente (`curated.quality_results`).
     6. Hora de última actualización y frescura (`curated.pipeline_runs`).
     """
     conn = get_db_conn(role="reader")
+    params = _build_event_params(start_date, end_date, min_mag, region)
     try:
         with conn.cursor() as cur:
+            # 1. Métricas exactas sobre el conjunto filtrado activo (idéntico a fetch_events y fetch_timeseries_stats)
             cur.execute(
                 """
                 SELECT
                     COUNT(*)::int,
-                    COALESCE(ROUND(MAX(mag)::numeric, 1), 0.0)::float,
+                    COALESCE(ROUND(MAX(mag)::numeric, 2), 0.0)::float,
                     COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float,
+                    COALESCE(ROUND(MIN(mag)::numeric, 2), 0.0)::float,
+                    COALESCE(ROUND(AVG(depth_km)::numeric, 1), 0.0)::float,
+                    COALESCE(ROUND(MAX(depth_km)::numeric, 1), 0.0)::float,
+                    COALESCE(SUM(CASE WHEN mag >= 5.0 THEN 1 ELSE 0 END), 0)::int,
+                    COALESCE(SUM(CASE WHEN depth_km < 70.0 THEN 1 ELSE 0 END), 0)::int,
                     COALESCE(SUM(tsunami), 0)::int
                 FROM curated.events
-                WHERE time >= NOW() - INTERVAL '24 hours';
-                """
+                WHERE (%s::date IS NULL OR time >= %s::date)
+                  AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
+                  AND (%s::float IS NULL OR mag >= %s::float)
+                  AND (%s::text IS NULL OR region ILIKE %s::text);
+                """,
+                params,
             )
-            ev_24h, mag_max, mag_avg, tsu_count = cur.fetchone()
+            (
+                total_filtered,
+                mag_max,
+                mag_avg,
+                mag_min,
+                depth_avg,
+                depth_max,
+                strong_cnt,
+                shallow_cnt,
+                tsu_count,
+            ) = cur.fetchone()
 
-            if int(ev_24h) == 0:
-                # Si aún no hay sismos en las últimas 24h exactas pero sí en el lote cargado
+            # Región más activa del conjunto filtrado
+            cur.execute(
+                """
+                SELECT region, COUNT(*)::int AS c
+                FROM curated.events
+                WHERE (%s::date IS NULL OR time >= %s::date)
+                  AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
+                  AND (%s::float IS NULL OR mag >= %s::float)
+                  AND (%s::text IS NULL OR region ILIKE %s::text)
+                GROUP BY region
+                ORDER BY c DESC, MAX(mag) DESC
+                LIMIT 1;
+                """,
+                params,
+            )
+            top_reg_row = cur.fetchone()
+            top_reg_name = str(top_reg_row[0]) if top_reg_row else "Sin datos"
+            top_reg_cnt = int(top_reg_row[1]) if top_reg_row else 0
+
+            # 2. Conteo de las últimas 24h del catálogo aplicando los mismos filtros de magnitud y región
+            if start_date is not None or end_date is not None:
+                ev_24h = int(total_filtered)
+            else:
                 cur.execute(
                     """
-                    SELECT
-                        COUNT(*)::int,
-                        COALESCE(ROUND(MAX(mag)::numeric, 1), 0.0)::float,
-                        COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float,
-                        COALESCE(SUM(tsunami), 0)::int
-                    FROM curated.events;
-                    """
+                    SELECT COUNT(*)::int
+                    FROM curated.events
+                    WHERE time >= (SELECT COALESCE(MAX(time), NOW()) FROM curated.events) - INTERVAL '24 hours'
+                      AND (%s::date IS NULL OR time >= %s::date)
+                      AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
+                      AND (%s::float IS NULL OR mag >= %s::float)
+                      AND (%s::text IS NULL OR region ILIKE %s::text);
+                    """,
+                    params,
                 )
-                ev_24h, mag_max, mag_avg, tsu_count = cur.fetchone()
+                ev_24h = int(cur.fetchone()[0])
 
             cur.execute(
                 """
@@ -141,8 +193,16 @@ def fetch_kpis() -> KpisResponse:
 
             return KpisResponse(
                 events_24h=int(ev_24h),
+                total_filtered_events=int(total_filtered),
                 max_magnitude=float(mag_max),
                 avg_magnitude=float(mag_avg),
+                min_magnitude=float(mag_min),
+                avg_depth_km=float(depth_avg),
+                max_depth_km=float(depth_max),
+                strong_events_count=int(strong_cnt),
+                shallow_events_count=int(shallow_cnt),
+                most_active_region=top_reg_name,
+                most_active_region_count=top_reg_cnt,
                 tsunami_alerts=int(tsu_count),
                 quality_score=quality_score,
                 last_updated=last_updated,
@@ -329,7 +389,8 @@ def fetch_timeseries_stats(
                     region,
                     COUNT(*)::int AS conteo,
                     COALESCE(ROUND(MAX(mag)::numeric, 2), 0.0)::float AS mag_max,
-                    COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float AS mag_promedio
+                    COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float AS mag_promedio,
+                    COALESCE(ROUND(AVG(depth_km)::numeric, 1), 0.0)::float AS prof_promedio
                 FROM curated.events
                 WHERE (%s::date IS NULL OR time >= %s::date)
                   AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
@@ -347,13 +408,93 @@ def fetch_timeseries_stats(
                     conteo=int(r[1]),
                     mag_max=float(r[2]),
                     mag_promedio=float(r[3]),
+                    prof_promedio=float(r[4]),
                 )
                 for r in cur.fetchall()
             ]
 
+            # 4. Evolución diaria (últimos 30 días o rango filtrado)
+            cur.execute(
+                """
+                SELECT
+                    to_char(date_trunc('day', time), 'YYYY-MM-DD') AS fecha,
+                    COUNT(*)::int AS conteo,
+                    COALESCE(ROUND(MAX(mag)::numeric, 2), 0.0)::float AS mag_max,
+                    COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float AS mag_promedio,
+                    COALESCE(SUM(CASE WHEN mag >= 5.0 THEN 1 ELSE 0 END), 0)::int AS fuertes_m5
+                FROM curated.events
+                WHERE (%s::date IS NULL OR time >= %s::date)
+                  AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
+                  AND (%s::float IS NULL OR mag >= %s::float)
+                  AND (%s::text IS NULL OR region ILIKE %s::text)
+                GROUP BY 1
+                ORDER BY 1 ASC
+                LIMIT 45;
+                """,
+                params,
+            )
+            daily_trend = [
+                DailyTrendPoint(
+                    fecha=str(r[0]),
+                    conteo=int(r[1]),
+                    mag_max=float(r[2]),
+                    mag_promedio=float(r[3]),
+                    fuertes_m5=int(r[4]),
+                )
+                for r in cur.fetchall()
+            ]
+
+            # 5. Distribución por profundidad hipocentral (Superficial, Intermedio, Profundo)
+            cur.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN depth_km < 70.0 THEN 'Superficial'
+                        WHEN depth_km < 300.0 THEN 'Intermedio'
+                        ELSE 'Profundo'
+                    END AS categoria,
+                    CASE
+                        WHEN depth_km < 70.0 THEN '0 - 70 km'
+                        WHEN depth_km < 300.0 THEN '70 - 300 km'
+                        ELSE '300 - 800 km'
+                    END AS rango_km,
+                    COUNT(*)::int AS conteo,
+                    COALESCE(ROUND(AVG(mag)::numeric, 2), 0.0)::float AS mag_promedio,
+                    COALESCE(ROUND(MAX(mag)::numeric, 2), 0.0)::float AS mag_max,
+                    CASE
+                        WHEN depth_km < 70.0 THEN 1
+                        WHEN depth_km < 300.0 THEN 2
+                        ELSE 3
+                    END AS orden
+                FROM curated.events
+                WHERE (%s::date IS NULL OR time >= %s::date)
+                  AND (%s::date IS NULL OR time < (%s::date + INTERVAL '1 day'))
+                  AND (%s::float IS NULL OR mag >= %s::float)
+                  AND (%s::text IS NULL OR region ILIKE %s::text)
+                GROUP BY 1, 2, 6
+                ORDER BY orden ASC;
+                """,
+                params,
+            )
+            depth_rows = cur.fetchall()
+            tot_depth = sum(int(r[2]) for r in depth_rows) or 1
+            depth_dist = [
+                DepthDistributionPoint(
+                    categoria=str(r[0]),
+                    rango_km=str(r[1]),
+                    conteo=int(r[2]),
+                    porcentaje=round((int(r[2]) * 100.0) / tot_depth, 1),
+                    mag_promedio=float(r[3]),
+                    mag_max=float(r[4]),
+                )
+                for r in depth_rows
+            ]
+
             return TimeseriesStatsResponse(
                 hourly=hourly,
+                daily_trend=daily_trend,
                 magnitude_distribution=mag_dist,
+                depth_distribution=depth_dist,
                 top_regions=top_regions,
             )
     finally:

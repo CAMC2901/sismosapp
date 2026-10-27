@@ -25,8 +25,16 @@ class TokenResponse(BaseModel):
 
 class KpisResponse(BaseModel):
     events_24h: int
+    total_filtered_events: int = 0
     max_magnitude: float
     avg_magnitude: float
+    min_magnitude: float = 0.0
+    avg_depth_km: float = 0.0
+    max_depth_km: float = 0.0
+    strong_events_count: int = 0
+    shallow_events_count: int = 0
+    most_active_region: str = "N/A"
+    most_active_region_count: int = 0
     tsunami_alerts: int
     quality_score: float
     last_updated: Optional[datetime] = None
@@ -78,11 +86,31 @@ class RegionActivityPoint(BaseModel):
     conteo: int
     mag_max: float
     mag_promedio: float
+    prof_promedio: float = 0.0
+
+
+class DepthDistributionPoint(BaseModel):
+    categoria: str
+    rango_km: str
+    conteo: int
+    porcentaje: float
+    mag_promedio: float
+    mag_max: float
+
+
+class DailyTrendPoint(BaseModel):
+    fecha: str
+    conteo: int
+    mag_max: float
+    mag_promedio: float
+    fuertes_m5: int
 
 
 class TimeseriesStatsResponse(BaseModel):
     hourly: List[HourlyPoint]
+    daily_trend: List[DailyTrendPoint] = Field(default_factory=list)
     magnitude_distribution: List[MagnitudeDistributionPoint]
+    depth_distribution: List[DepthDistributionPoint] = Field(default_factory=list)
     top_regions: List[RegionActivityPoint]
 
 
@@ -162,3 +190,4 @@ class ChatResponse(BaseModel):
     data_version: str
     supporting_data: Optional[Dict[str, Any]] = None
     latency_ms: float
+

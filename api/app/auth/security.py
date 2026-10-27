@@ -130,3 +130,4 @@ async def require_admin(user: UserInfo = Depends(get_current_user)) -> UserInfo:
             "pero esta operación es exclusiva para el rol 'admin'."
         )
     return user
+

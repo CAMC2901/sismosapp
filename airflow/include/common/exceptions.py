@@ -46,3 +46,4 @@ class AIValidationError(SismoWatchError):
 
 class UnsafeQueryError(SismoWatchError):
     """Error de seguridad cuando una consulta SQL viola las políticas de solo lectura."""
+

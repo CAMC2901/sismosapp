@@ -8,6 +8,7 @@ from airflow.datasets import Dataset
 from airflow.decorators import dag, task
 from airflow.utils.task_group import TaskGroup
 from alerts.callbacks import on_failure_callback, on_success_callback, record_pipeline_run
+from governance.openmetadata_sync import sync_openmetadata_safe
 from publish.postgres_publisher import publish_gold_from_minio_to_postgres
 from quality.gate import evaluate_batch_quality_gate
 from spark_jobs.bronze_to_silver import get_latest_bronze_uris, run_bronze_to_silver
@@ -60,7 +61,7 @@ def usgs_transform_medallion_dag():
                 estado="RUNNING",
                 resultado="Iniciando transformación Medallion en Spark...",
             )
-            info = get_latest_bronze_uris(limit=3)
+            info = get_latest_bronze_uris(limit=1)
             return {
                 "s3_uris": info["s3_uris"],
                 "latest_ts_iso": info["latest_ts_iso"],
@@ -106,11 +107,13 @@ def usgs_transform_medallion_dag():
 
         @task(task_id="publish_gold_to_postgres", outlets=[GOLD_ASSET])
         def publish_gold_to_postgres(gold_meta: Dict[str, Any]) -> Dict[str, Any]:
-            return publish_gold_from_minio_to_postgres(
+            pub_res = publish_gold_from_minio_to_postgres(
                 data_version=gold_meta["data_version"],
                 run_id=gold_meta["run_id"],
                 dag_id="usgs_transform_medallion",
             )
+            sync_openmetadata_safe()
+            return pub_res
 
     b_meta = resolve_bronze_batch()
     s_meta = spark_bronze_to_silver_and_quality_gate(b_meta)
@@ -119,3 +122,4 @@ def usgs_transform_medallion_dag():
 
 
 dag_instance = usgs_transform_medallion_dag()
+

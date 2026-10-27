@@ -6,10 +6,12 @@ import {
   Bot,
   CheckCircle2,
   Clock,
+  Compass,
   Database,
   Download,
   FileText,
   Filter,
+  Flame,
   Globe,
   Layers,
   Lock,
@@ -28,11 +30,13 @@ import {
 } from 'lucide-react';
 import {
   Area,
-  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  Legend,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -56,6 +60,7 @@ import { SeismicMap } from './components/SeismicMap';
 
 type ActiveTab = 'dashboard' | 'reports' | 'pipeline' | 'chat' | 'admin';
 type SseStatus = 'connected' | 'reconnecting' | 'disconnected';
+type TimeChartMode = 'daily' | 'hourly';
 
 interface ChatMessage {
   id: string;
@@ -65,15 +70,132 @@ interface ChatMessage {
   ts: string;
 }
 
-const SUGGESTED_QUESTIONS = [
-  '¿Qué es SismoWatch y para qué sirve?',
-  '¿Cuáles son los KPIs de las últimas 24 horas?',
-  '¿Cuál fue el sismo más fuerte registrado?',
-  '¿Cuáles son las regiones con mayor actividad sísmica?',
-  '¿Qué anomalías (z-score o enjambres DBSCAN) se detectaron?',
-  '¿Cómo funciona el control de calidad de datos con Pandera?',
-  'SELECT id, mag, region, depth_km FROM curated.events ORDER BY mag DESC LIMIT 5',
+const SEISMIC_SUGGESTED_QUESTIONS = [
+  '¿Cuál fue el último sismo registrado en el sistema?',
+  '¿Hace cuántos minutos fue el sismo más reciente?',
+  '¿Cuál ha sido el sismo más fuerte del día de hoy?',
+  '¿Cuáles son las 3 regiones con más actividad sísmica hoy?',
+  'Del top 5 de regiones más sísmicas hoy, ¿cuál tuvo el sismo más fuerte?',
+  'Comparado con ayer, ¿hoy ha temblado más o menos?',
+  '¿Cuál ha sido el pico de sismos por hora en esta semana?',
+  '¿Hay algún enjambre sísmico activo en este momento?',
+  '¿A qué hora se actualizó la base de datos por última vez?',
+  '¿Cuál fue el puntaje de calidad en la última corrida de Airflow?',
 ];
+
+function cleanInlineText(line: string): string {
+  return line.replace(/\*\*+/g, '').replace(/__+/g, '').replace(/`+/g, '');
+}
+
+function renderFormattedChatText(rawText: string): React.ReactNode {
+  const lines = (rawText || '').split('\n');
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+        tableLines.push(lines[i].trim());
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        const parseRow = (rowStr: string) =>
+          rowStr
+            .slice(1, -1)
+            .split('|')
+            .map((cell) => cleanInlineText(cell.trim()));
+
+        const headers = parseRow(tableLines[0]);
+        const dataRows = tableLines
+          .slice(1)
+          .filter((r) => !/^\|[\s:|-]+\|$/.test(r))
+          .map(parseRow);
+
+        blocks.push(
+          <div
+            key={`tbl_${i}`}
+            className="my-2.5 overflow-x-auto rounded-xl border border-slate-700/80 bg-slate-900/90"
+          >
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-800/90 text-orange-300 border-b border-slate-700">
+                  {headers.map((h, hIdx) => (
+                    <th key={hIdx} className="py-2 px-3 font-bold">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {dataRows.map((row, rIdx) => (
+                  <tr
+                    key={rIdx}
+                    className="border-b border-slate-800/70 last:border-0 hover:bg-slate-800/40"
+                  >
+                    {row.map((cell, cIdx) => (
+                      <td
+                        key={cIdx}
+                        className={`py-2 px-3 ${
+                          cIdx === 0 ? 'font-semibold text-slate-100' : 'text-slate-300'
+                        }`}
+                      >
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+        continue;
+      }
+    }
+
+    const cleanLine = cleanInlineText(lines[i]);
+    if (cleanLine.trim() === '') {
+      blocks.push(<div key={`sp_${i}`} className="h-2" />);
+    } else {
+      blocks.push(
+        <p key={`ln_${i}`} className="leading-relaxed">
+          {cleanLine}
+        </p>
+      );
+    }
+    i++;
+  }
+
+  return <div className="space-y-1">{blocks}</div>;
+}
+
+function buildWelcomeMessage(username?: string): ChatMessage[] {
+  return [
+    {
+      id: `welcome_${Date.now()}`,
+      sender: 'agent',
+      text:
+        `Hola, ${username || 'usuario'}. Soy el Asistente Sísmico de SismoWatch.\n\n` +
+        `Puedes preguntarme en lenguaje natural sobre la actividad sísmica global y te entregaré tablas organizadas con estadísticas y métricas actualizadas:\n` +
+        `| Tema de Consulta | Qué información puedo entregarte |\n` +
+        `| :--- | :--- |\n` +
+        `| Resumen y Estadísticas | Conteo de sismos (30 días y 24h), magnitudes, profundidades y alertas de tsunami |\n` +
+        `| Terremotos Destacados | Ficha del sismo más fuerte y búsqueda por magnitud o país |\n` +
+        `| Regiones y Tendencias | Zonas donde más tiembla, evolución por hora y enjambres sísmicos |\n` +
+        `| Dudas Sismológicas | Qué significa la magnitud, profundidad hipocentral y alertas oceánicas |`,
+      ts: new Date().toLocaleTimeString(),
+    },
+  ];
+}
+
+function getMagnitudeSeverityLabel(mag: number): string {
+  if (mag >= 7.0) return 'Terremoto Mayor (7.0+)';
+  if (mag >= 6.0) return 'Sismo Fuerte (6.0 - 6.9)';
+  if (mag >= 5.0) return 'Sismo Moderado (5.0 - 5.9)';
+  if (mag >= 4.0) return 'Sismo Ligero (4.0 - 4.9)';
+  return 'Actividad Menor (< 4.0)';
+}
 
 export const App: React.FC = () => {
   const [session, setSession] = useState<UserSession | null>(() => getSavedSession());
@@ -93,6 +215,7 @@ export const App: React.FC = () => {
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [dashLoading, setDashLoading] = useState(false);
   const [dashError, setDashError] = useState<string | null>(null);
+  const [timeChartMode, setTimeChartMode] = useState<TimeChartMode>('daily');
 
   // Filtros del Dashboard
   const [filterStartDate, setFilterStartDate] = useState('');
@@ -100,7 +223,7 @@ export const App: React.FC = () => {
   const [filterMinMag, setFilterMinMag] = useState<string>('0');
   const [filterRegion, setFilterRegion] = useState('');
 
-  // Tiempo Real SSE
+  // Tiempo Real
   const [sseStatus, setSseStatus] = useState<SseStatus>('disconnected');
   const [lastLiveBanner, setLastLiveBanner] = useState<string | null>(null);
   const sseRef = useRef<EventSource | null>(null);
@@ -114,12 +237,12 @@ export const App: React.FC = () => {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState<string | null>(null);
 
-  // Estado del Pipeline
+  // Estado del Monitoreo Operativo
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
 
-  // Estado Admin (Cuarentena/Rechazos y acciones)
+  // Estado Admin
   const [quarantine, setQuarantine] = useState<QuarantineData | null>(null);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminMessage, setAdminMessage] = useState<string | null>(null);
@@ -127,23 +250,27 @@ export const App: React.FC = () => {
   const [backfillDays, setBackfillDays] = useState(30);
   const [backfillMinMag, setBackfillMinMag] = useState(2.5);
 
-  // Estado del Agente Conversacional
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      sender: 'agent',
-      text: '¡Bienvenido al centro de inteligencia **SismoWatch**! Estoy conectado al schema `curated` con arquitectura en cascada de 4 niveles (Intents/FAQ → Caché Exacta/Semántica `bge-m3` → Skills + LLM → Respaldo Determinista). ¿Qué deseas analizar hoy?',
-      ts: new Date().toLocaleTimeString(),
-    },
-  ]);
+  // Estado del Asistente Sísmico
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
+    buildWelcomeMessage(session?.username)
+  );
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
 
-  // Registrar interceptor global de 401
+  useEffect(() => {
+    setChatMessages(buildWelcomeMessage(session?.username));
+    setChatInput('');
+    setQuarantine(null);
+    setPipelineStatus(null);
+    setAdminMessage(null);
+    setAdminError(null);
+  }, [session?.username, session?.role]);
+
   useEffect(() => {
     registerUnauthorizedInterceptor(() => {
       setSession(null);
-      setLoginError('Su sesión expiró o no está autorizada (401). Por favor inicie sesión nuevamente.');
+      setChatMessages([]);
+      setLoginError('Su sesión expiró. Por favor inicie sesión nuevamente.');
     });
   }, []);
 
@@ -154,32 +281,36 @@ export const App: React.FC = () => {
     }
     clearSession();
     setSession(null);
+    setChatMessages([]);
+    setChatInput('');
+    setQuarantine(null);
+    setPipelineStatus(null);
     setActiveTab('dashboard');
   }, []);
 
-  // Carga del Dashboard
+  // Carga sincronizada del Dashboard
   const loadDashboardData = useCallback(async () => {
     if (!session) return;
     setDashLoading(true);
     setDashError(null);
     try {
       const minMagNum = filterMinMag !== '' ? parseFloat(filterMinMag) : undefined;
+      const commonFilters = {
+        start_date: filterStartDate || undefined,
+        end_date: filterEndDate || undefined,
+        min_mag: minMagNum,
+        region: filterRegion || undefined,
+      };
       const [kpiRes, evRes, stRes] = await Promise.all([
-        apiClient.getKpis(),
+        apiClient.getKpis(commonFilters),
         apiClient.getEvents({
-          start_date: filterStartDate || undefined,
-          end_date: filterEndDate || undefined,
-          min_mag: minMagNum,
-          region: filterRegion || undefined,
+          ...commonFilters,
           page: 1,
-          page_size: 120,
+          page_size: 250,
         }),
         apiClient.getTimeseries({
-          hours: 168,
-          start_date: filterStartDate || undefined,
-          end_date: filterEndDate || undefined,
-          min_mag: minMagNum,
-          region: filterRegion || undefined,
+          hours: 72,
+          ...commonFilters,
         }),
       ]);
       setKpis(kpiRes);
@@ -187,7 +318,7 @@ export const App: React.FC = () => {
       setTotalEventsCount(evRes.total);
       setStats(stRes);
     } catch (err: any) {
-      setDashError(err.message || 'Error al cargar los datos del dashboard.');
+      setDashError(err.message || 'Error al cargar los datos sísmicos.');
     } finally {
       setDashLoading(false);
     }
@@ -210,13 +341,13 @@ export const App: React.FC = () => {
         setSelectedReport(res.items[0]);
       }
     } catch (err: any) {
-      setReportsError(err.message || 'Error al cargar reportes diarios.');
+      setReportsError(err.message || 'Error al cargar los boletines diarios.');
     } finally {
       setReportsLoading(false);
     }
   }, [session, reportSearch, reportSort, selectedReport]);
 
-  // Carga de Estado del Pipeline
+  // Carga de Estado del Servicio
   const loadPipelineData = useCallback(async () => {
     if (!session) return;
     setPipelineLoading(true);
@@ -225,7 +356,7 @@ export const App: React.FC = () => {
       const res = await apiClient.getPipelineStatus();
       setPipelineStatus(res);
     } catch (err: any) {
-      setPipelineError(err.message || 'Error al consultar estado del pipeline.');
+      setPipelineError(err.message || 'Error al consultar el estado del servicio.');
     } finally {
       setPipelineLoading(false);
     }
@@ -244,7 +375,7 @@ export const App: React.FC = () => {
       setQuarantine(qRes);
       setPipelineStatus(pRes);
     } catch (err: any) {
-      setAdminError(err.message || 'Error al cargar auditoría administrativa.');
+      setAdminError(err.message || 'Error al cargar el panel de administración.');
     } finally {
       setAdminLoading(false);
     }
@@ -258,7 +389,7 @@ export const App: React.FC = () => {
     if (activeTab === 'admin' && session.role === 'admin') loadAdminData();
   }, [session, activeTab, loadDashboardData, loadReportsData, loadPipelineData, loadAdminData]);
 
-  // Conexión SSE en Tiempo Real con reconexión exponencial
+  // Conexión en vivo
   useEffect(() => {
     if (!session) {
       setSseStatus('disconnected');
@@ -288,7 +419,7 @@ export const App: React.FC = () => {
         setSseStatus('connected');
         try {
           const payload = JSON.parse(evt.data);
-          if (payload.kpis) {
+          if (payload.kpis && !filterStartDate && !filterEndDate && !filterRegion && filterMinMag === '0') {
             setKpis(payload.kpis);
           }
           if (Array.isArray(payload.latest_events) && payload.latest_events.length > 0) {
@@ -299,7 +430,7 @@ export const App: React.FC = () => {
                 .map((e: SeismicEvent) => ({ ...e, isNew: true }));
               if (incoming.length > 0) {
                 setLastLiveBanner(
-                  `Nuevos eventos recibidos en vivo: ${incoming.length} sismo(s) actualizado(s)`
+                  `Actualización en vivo: ${incoming.length} nuevo(s) sismo(s) detectado(s)`
                 );
                 return [...incoming, ...prev].slice(0, 150);
               }
@@ -337,7 +468,7 @@ export const App: React.FC = () => {
         clearTimeout(reconnectTimerRef.current);
       }
     };
-  }, [session]);
+  }, [session, filterStartDate, filterEndDate, filterRegion, filterMinMag]);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -384,7 +515,7 @@ export const App: React.FC = () => {
         {
           id: `err_${Date.now()}`,
           sender: 'agent',
-          text: `⚠️ Error controlado: ${err.message || 'No fue posible procesar la consulta.'}`,
+          text: `No fue posible procesar la consulta en este momento: ${err.message || 'Intenta nuevamente.'}`,
           ts: new Date().toLocaleTimeString(),
         },
       ]);
@@ -425,14 +556,32 @@ export const App: React.FC = () => {
 
   const formattedHourly = useMemo(() => {
     if (!stats?.hourly) return [];
-    return stats.hourly.map((pt) => ({
+    return stats.hourly.slice(-48).map((pt) => ({
       ...pt,
-      horaCorta: new Date(pt.hora).toISOString().slice(5, 16).replace('T', ' '),
+      etiqueta: new Date(pt.hora).toISOString().slice(5, 16).replace('T', ' ') + 'h',
     }));
   }, [stats]);
 
+  const formattedDaily = useMemo(() => {
+    if (!stats?.daily_trend) return [];
+    return stats.daily_trend.map((pt) => ({
+      ...pt,
+      etiqueta: pt.fecha.slice(5), // MM-DD
+    }));
+  }, [stats]);
+
+  const totalFilteredCount = kpis?.total_filtered_events ?? totalEventsCount;
+  const shallowPct =
+    totalFilteredCount > 0
+      ? Math.round(((kpis?.shallow_events_count ?? 0) * 100) / totalFilteredCount)
+      : 0;
+  const strongPct =
+    totalFilteredCount > 0
+      ? (((kpis?.strong_events_count ?? 0) * 100) / totalFilteredCount).toFixed(1)
+      : '0.0';
+
   // ---------------------------------------------------------------------------
-  // VISTA DE LOGIN (Rutas protegidas: sin sesión no se muestra ninguna ruta de datos)
+  // VISTA DE LOGIN
   // ---------------------------------------------------------------------------
   if (!session) {
     return (
@@ -445,15 +594,15 @@ export const App: React.FC = () => {
             </div>
             <div>
               <span className="text-xs font-bold uppercase tracking-widest text-orange-400">
-                SuperApp Data Product
+                SuperApp • Monitoreo Global
               </span>
               <h1 className="text-2xl font-extrabold text-white tracking-tight">SismoWatch</h1>
             </div>
           </div>
 
           <p className="text-sm text-slate-400 mb-6">
-            Plataforma global de monitoreo sísmico casi en tiempo real. Arquitectura Medallion
-            (USGS → Airflow → Spark → MinIO → PostgreSQL `curated`).
+            Plataforma de vigilancia sísmica global, análisis estadístico de terremotos, alertas de
+            tsunami y asistente inteligente de consulta.
           </p>
 
           {loginError && (
@@ -474,7 +623,7 @@ export const App: React.FC = () => {
                 onChange={(e) => setLoginUser(e.target.value)}
                 required
                 className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-orange-500"
-                placeholder="admin o viewer"
+                placeholder="Ingresa tu usuario"
               />
             </div>
             <div>
@@ -496,13 +645,13 @@ export const App: React.FC = () => {
               className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-bold text-sm shadow-lg shadow-orange-600/25 transition flex items-center justify-center gap-2 disabled:opacity-50"
             >
               <Lock className="w-4 h-4" />
-              {loginLoading ? 'Autenticando con JWT + bcrypt...' : 'Iniciar Sesión Segura'}
+              {loginLoading ? 'Verificando acceso...' : 'Iniciar Sesión'}
             </button>
           </form>
 
           <div className="mt-6 pt-5 border-t border-slate-800">
             <p className="text-xs text-slate-400 mb-2.5 font-medium">
-              Perfiles sembrados para demostración RBAC:
+              Acceso rápido por perfil de usuario:
             </p>
             <div className="grid grid-cols-2 gap-2.5">
               <button
@@ -513,8 +662,8 @@ export const App: React.FC = () => {
                 }}
                 className="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-xs text-slate-200 font-medium transition text-left"
               >
-                <div className="font-bold text-orange-400">Rol: admin</div>
-                <div className="text-[11px] text-slate-400">Acceso total + Cuarentena</div>
+                <div className="font-bold text-orange-400">Administrador</div>
+                <div className="text-[11px] text-slate-400">Gestión completa</div>
               </button>
               <button
                 type="button"
@@ -524,8 +673,8 @@ export const App: React.FC = () => {
                 }}
                 className="px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-xs text-slate-200 font-medium transition text-left"
               >
-                <div className="font-bold text-emerald-400">Rol: viewer</div>
-                <div className="text-[11px] text-slate-400">Solo lectura en curated</div>
+                <div className="font-bold text-emerald-400">Analista (Viewer)</div>
+                <div className="text-[11px] text-slate-400">Consulta y análisis</div>
               </button>
             </div>
           </div>
@@ -535,7 +684,7 @@ export const App: React.FC = () => {
   }
 
   // ---------------------------------------------------------------------------
-  // PLATAFORMA AUTENTICADA
+  // PLATAFORMA PRINCIPAL
   // ---------------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -554,12 +703,12 @@ export const App: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                Catálogo Global USGS • Cadencia Micro-Batch 5m • Consumo SSE
+                Centro de Monitoreo Sísmico Global • Servicio Geológico USGS
               </p>
             </div>
           </div>
 
-          {/* Indicador EN VIVO SSE */}
+          {/* Indicador EN VIVO */}
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-slate-900 border border-slate-800 text-xs">
               <span className="relative flex h-2.5 w-2.5">
@@ -594,10 +743,10 @@ export const App: React.FC = () => {
                 }
               >
                 {sseStatus === 'connected'
-                  ? 'Conectado (SSE)'
+                  ? 'Monitoreo Activo'
                   : sseStatus === 'reconnecting'
-                  ? 'Reconectando...'
-                  : 'Desconectado'}
+                  ? 'Sincronizando...'
+                  : 'Sin conexión'}
               </span>
               {kpis?.last_updated && (
                 <span className="text-slate-400 hidden sm:inline">
@@ -616,7 +765,7 @@ export const App: React.FC = () => {
                     : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                 }`}
               >
-                {session.role}
+                {session.role === 'admin' ? 'Admin' : 'Analista'}
               </span>
               <button
                 onClick={handleLogout}
@@ -629,7 +778,7 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Navegación por Pestañas (Controles Admin NO se renderizan para viewer) */}
+        {/* Navegación por Pestañas */}
         <div className="max-w-7xl mx-auto mt-3 flex items-center gap-2 overflow-x-auto pb-1">
           <button
             onClick={() => setActiveTab('dashboard')}
@@ -640,31 +789,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Globe className="w-4 h-4" />
-            Dashboard & Mapa
-          </button>
-
-          <button
-            onClick={() => setActiveTab('reports')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition ${
-              activeTab === 'reports'
-                ? 'bg-orange-600 text-white shadow-md shadow-orange-600/25'
-                : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            Reportes Diarios IA
-          </button>
-
-          <button
-            onClick={() => setActiveTab('pipeline')}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition ${
-              activeTab === 'pipeline'
-                ? 'bg-orange-600 text-white shadow-md shadow-orange-600/25'
-                : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-            }`}
-          >
-            <Layers className="w-4 h-4" />
-            Estado del Pipeline
+            Mapa y Estadísticas Sísmicas
           </button>
 
           <button
@@ -676,7 +801,31 @@ export const App: React.FC = () => {
             }`}
           >
             <Bot className="w-4 h-4" />
-            Agente IA SismoWatch
+            Asistente Sísmico IA
+          </button>
+
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition ${
+              activeTab === 'reports'
+                ? 'bg-orange-600 text-white shadow-md shadow-orange-600/25'
+                : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            Boletines Sísmicos Diarios
+          </button>
+
+          <button
+            onClick={() => setActiveTab('pipeline')}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition ${
+              activeTab === 'pipeline'
+                ? 'bg-orange-600 text-white shadow-md shadow-orange-600/25'
+                : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            Estado de Actualización
           </button>
 
           {session.role === 'admin' && (
@@ -689,13 +838,13 @@ export const App: React.FC = () => {
               }`}
             >
               <ShieldAlert className="w-4 h-4" />
-              Panel Admin & Calidad
+              Administración
             </button>
           )}
         </div>
       </header>
 
-      {/* Banner de actualización en vivo SSE */}
+      {/* Banner de actualización en vivo */}
       {lastLiveBanner && (
         <div className="bg-orange-500/15 border-b border-orange-500/30 px-6 py-2 text-xs text-orange-200 flex items-center justify-between">
           <span className="flex items-center gap-2">
@@ -714,7 +863,7 @@ export const App: React.FC = () => {
       {/* Contenido Principal */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
         {/* ===================================================================
-            PESTAÑA 1: DASHBOARD & MAPA
+            PESTAÑA 1: DASHBOARD SÍSMICO, MAPA Y GRÁFICAS AMPLIADAS
         =================================================================== */}
         {activeTab === 'dashboard' && (
           <>
@@ -722,10 +871,10 @@ export const App: React.FC = () => {
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-end gap-4">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-orange-400 mr-2 self-center">
                 <Filter className="w-4 h-4" />
-                Filtros
+                Filtrar Sismos
               </div>
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Fecha Inicio</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Fecha Inicial</label>
                 <input
                   type="date"
                   value={filterStartDate}
@@ -734,7 +883,7 @@ export const App: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Fecha Fin</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Fecha Final</label>
                 <input
                   type="date"
                   value={filterEndDate}
@@ -756,13 +905,13 @@ export const App: React.FC = () => {
                   className="w-28 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200"
                 />
               </div>
-              <div className="flex-1 min-w-[180px]">
-                <label className="block text-[11px] text-slate-400 mb-1">Región</label>
+              <div className="flex-1 min-w-[200px]">
+                <label className="block text-[11px] text-slate-400 mb-1">País o Región</label>
                 <input
                   type="text"
                   value={filterRegion}
                   onChange={(e) => setFilterRegion(e.target.value)}
-                  placeholder="Ej. Alaska, Chile, Japan, California..."
+                  placeholder="Ej. Alaska, Chile, Japan, Panama, California..."
                   className="w-full px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200"
                 />
               </div>
@@ -772,7 +921,7 @@ export const App: React.FC = () => {
                   className="px-4 py-1.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold transition flex items-center gap-1.5"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${dashLoading ? 'animate-spin' : ''}`} />
-                  Actualizar
+                  Aplicar Filtro
                 </button>
                 <button
                   onClick={() => {
@@ -783,7 +932,7 @@ export const App: React.FC = () => {
                   }}
                   className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
                 >
-                  Limpiar
+                  Restablecer
                 </button>
               </div>
             </div>
@@ -803,30 +952,32 @@ export const App: React.FC = () => {
               </div>
             )}
 
-            {/* 6 KPIs Obligatorios */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            {/* 8 Tarjetas de Métricas y Estadísticas Sísmicas Sincronizadas */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {dashLoading && !kpis ? (
-                Array.from({ length: 6 }).map((_, i) => (
+                Array.from({ length: 8 }).map((_, i) => (
                   <div
                     key={i}
-                    className="h-24 rounded-2xl bg-slate-900 border border-slate-800 animate-pulse p-4"
+                    className="h-28 rounded-2xl bg-slate-900 border border-slate-800 animate-pulse p-4"
                   />
                 ))
               ) : (
                 <>
+                  {/* 1. Total de Sismos en Vista */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                      <span>Eventos (24h)</span>
+                      <span>Sismos Registrados</span>
                       <Activity className="w-4 h-4 text-orange-400" />
                     </div>
                     <div className="text-2xl font-extrabold text-white">
-                      {kpis?.events_24h ?? 0}
+                      {totalFilteredCount.toLocaleString()}
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">
-                      Total filtro: {totalEventsCount}
+                    <div className="text-[11px] text-orange-300 mt-1 font-medium">
+                      Últimas 24 horas: {kpis?.events_24h ?? 0} sismos
                     </div>
                   </div>
 
+                  {/* 2. Magnitud Máxima */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
                       <span>Magnitud Máxima</span>
@@ -835,9 +986,12 @@ export const App: React.FC = () => {
                     <div className="text-2xl font-extrabold text-red-400">
                       M {kpis?.max_magnitude?.toFixed(1) ?? '0.0'}
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">Escala USGS</div>
+                    <div className="text-[11px] text-slate-400 mt-1 truncate">
+                      {getMagnitudeSeverityLabel(kpis?.max_magnitude ?? 0)}
+                    </div>
                   </div>
 
+                  {/* 3. Magnitud Promedio y Mínima */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
                       <span>Magnitud Promedio</span>
@@ -846,86 +1000,135 @@ export const App: React.FC = () => {
                     <div className="text-2xl font-extrabold text-amber-300">
                       M {kpis?.avg_magnitude?.toFixed(2) ?? '0.00'}
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">Media validada</div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Mínima registrada: M {kpis?.min_magnitude?.toFixed(2) ?? '0.00'}
+                    </div>
                   </div>
 
+                  {/* 4. Sismos Fuertes (M >= 5.0) */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                     <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                      <span>Alertas Tsunami</span>
+                      <span>Sismos Fuertes (M ≥ 5.0)</span>
+                      <Flame className="w-4 h-4 text-orange-500" />
+                    </div>
+                    <div className="text-2xl font-extrabold text-orange-400">
+                      {kpis?.strong_events_count ?? 0}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Representan el {strongPct}% del total
+                    </div>
+                  </div>
+
+                  {/* 5. Profundidad Promedio y Máxima */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                      <span>Profundidad Media</span>
+                      <Layers className="w-4 h-4 text-indigo-400" />
+                    </div>
+                    <div className="text-2xl font-extrabold text-indigo-300">
+                      {kpis?.avg_depth_km?.toFixed(1) ?? '0.0'} km
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Profundidad máx.: {kpis?.max_depth_km?.toFixed(0) ?? '0'} km
+                    </div>
+                  </div>
+
+                  {/* 6. Sismos Superficiales (< 70 km) */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                      <span>Sismos Superficiales</span>
+                      <Compass className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div className="text-2xl font-extrabold text-emerald-400">
+                      {kpis?.shallow_events_count?.toLocaleString() ?? 0}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      {shallowPct}% a menos de 70 km de prof.
+                    </div>
+                  </div>
+
+                  {/* 7. Región Más Activa */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                      <span>Zona Más Activa</span>
+                      <MapPin className="w-4 h-4 text-pink-400" />
+                    </div>
+                    <div
+                      className="text-lg font-extrabold text-white truncate"
+                      title={kpis?.most_active_region}
+                    >
+                      {kpis?.most_active_region || 'Global'}
+                    </div>
+                    <div className="text-[11px] text-pink-300 mt-1 font-medium">
+                      {kpis?.most_active_region_count ?? 0} sismos en la zona
+                    </div>
+                  </div>
+
+                  {/* 8. Alertas de Tsunami y Estado */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                      <span>Alertas de Tsunami</span>
                       <Waves className="w-4 h-4 text-sky-400" />
                     </div>
                     <div className="text-2xl font-extrabold text-sky-400">
                       {kpis?.tsunami_alerts ?? 0}
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">Boletín NOAA/USGS</div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                      <span>Puntaje Calidad</span>
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    </div>
-                    <div className="text-2xl font-extrabold text-emerald-400">
-                      {kpis?.quality_score?.toFixed(1) ?? '100.0'}%
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-1">Compuerta Pandera</div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                      <span>Última Actualización</span>
-                      <Clock className="w-4 h-4 text-purple-400" />
-                    </div>
-                    <div className="text-base font-bold text-white truncate">
-                      {kpis?.last_updated
-                        ? new Date(kpis.last_updated).toLocaleTimeString()
-                        : 'Sincronizando'}
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-1">
-                      Frescura: {kpis?.freshness_minutes ?? 0} min
+                    <div className="text-[11px] text-slate-400 mt-1 flex items-center justify-between">
+                      <span>Vigilancia oceánica</span>
+                      <span className="text-emerald-400 font-semibold">
+                        Calidad {kpis?.quality_score?.toFixed(0) ?? '100'}%
+                      </span>
                     </div>
                   </div>
                 </>
               )}
             </div>
 
-            {/* Mapa Leaflet + Feed lateral */}
+            {/* Mapa Sísmico + Lista de Eventos */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div>
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
                       <MapPin className="w-4 h-4 text-orange-400" />
-                      Mapa Sísmico Global Interactivo (Leaflet)
+                      Mapa Sísmico Global Interactivo
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Haz clic sobre un marcador o evento de la lista para inspeccionar su hipocentro.
+                      Haz clic en cualquier círculo del mapa o de la lista lateral para ver los
+                      detalles del epicentro.
                     </p>
                   </div>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {events.length} marcadores en vista
+                  <span className="text-xs text-slate-300 font-semibold bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">
+                    {events.length} sismos en el mapa
                   </span>
                 </div>
                 <SeismicMap events={events} selectedEventId={selectedEventId} />
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col h-[500px]">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col h-[520px]">
                 <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Radio className="w-4 h-4 text-orange-400" />
-                    Últimos Eventos en Curated
-                  </h2>
-                  <span className="text-[11px] text-slate-400">{events.length} mostrados</span>
+                  <div>
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-orange-400" />
+                      Últimos Sismos Registrados
+                    </h2>
+                    <p className="text-[11px] text-slate-400">
+                      Ordenados del más reciente al más antiguo
+                    </p>
+                  </div>
+                  <span className="text-[11px] text-orange-300 font-semibold">
+                    {totalFilteredCount.toLocaleString()} totales
+                  </span>
                 </div>
 
                 {events.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-400 text-xs p-6">
                     <Globe className="w-8 h-8 text-slate-600 mb-2" />
-                    No se encontraron eventos con los filtros seleccionados.
+                    No se encontraron sismos con los filtros seleccionados.
                   </div>
                 ) : (
                   <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-                    {events.slice(0, 60).map((ev) => (
+                    {events.slice(0, 80).map((ev) => (
                       <button
                         key={ev.id}
                         onClick={() => setSelectedEventId(ev.id)}
@@ -956,10 +1159,15 @@ export const App: React.FC = () => {
                           </div>
                           <div className="text-[11px] text-slate-400 flex items-center justify-between mt-1">
                             <span>{ev.region}</span>
-                            <span>{ev.depth_km.toFixed(0)} km prof.</span>
+                            <span>Prof. {ev.depth_km.toFixed(0)} km</span>
                           </div>
-                          <div className="text-[10px] text-slate-500 mt-0.5">
-                            {new Date(ev.time).toISOString().replace('T', ' ').slice(0, 16)} UTC
+                          <div className="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between">
+                            <span>
+                              {new Date(ev.time).toISOString().replace('T', ' ').slice(0, 16)} UTC
+                            </span>
+                            {ev.tsunami === 1 && (
+                              <span className="text-sky-400 font-bold">🌊 Tsunami</span>
+                            )}
                           </div>
                         </div>
                       </button>
@@ -969,70 +1177,187 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* 3 Gráficos Recharts */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Serie Temporal por Hora */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <h3 className="text-sm font-bold text-white mb-1">
-                  Serie Temporal por Hora (`agg_hourly`)
-                </h3>
-                <p className="text-xs text-slate-400 mb-4">
-                  Conteo horario de eventos sísmicos validados
-                </p>
-                <div className="h-60">
+            {/* ===============================================================
+                SECCIÓN DE 4 GRÁFICAS GRANDES Y EXPLICATIVAS (2 COLUMNAS AMPLIAS)
+            =============================================================== */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* GRÁFICA 1: Evolución Temporal (Diaria 30d o Por Hora 48h) + Magnitud Máxima */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                <div className="flex flex-wrap items-start justify-between gap-2 mb-4">
+                  <div>
+                    <h3 className="text-base font-bold text-white">
+                      1. Evolución de Sismos y Magnitud Máxima en el Tiempo
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Compara la cantidad de sismos registrados (área naranja) con la magnitud
+                      máxima alcanzada en cada periodo (línea roja).
+                    </p>
+                  </div>
+                  <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setTimeChartMode('daily')}
+                      className={`px-3 py-1 rounded-lg font-semibold transition ${
+                        timeChartMode === 'daily'
+                          ? 'bg-orange-600 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Por Día (30d)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimeChartMode('hourly')}
+                      className={`px-3 py-1 rounded-lg font-semibold transition ${
+                        timeChartMode === 'hourly'
+                          ? 'bg-orange-600 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Por Hora (48h)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={formattedHourly}>
+                    <ComposedChart
+                      data={timeChartMode === 'daily' ? formattedDaily : formattedHourly}
+                      margin={{ top: 10, right: 15, left: 0, bottom: 10 }}
+                    >
                       <defs>
-                        <linearGradient id="colorConteo" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#f97316" stopOpacity={0.5} />
-                          <stop offset="95%" stopColor="#f97316" stopOpacity={0.0} />
+                        <linearGradient id="colorSismos" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#f97316" stopOpacity={0.55} />
+                          <stop offset="95%" stopColor="#f97316" stopOpacity={0.05} />
                         </linearGradient>
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis dataKey="horaCorta" stroke="#94a3b8" fontSize={10} />
-                      <YAxis stroke="#94a3b8" fontSize={10} />
+                      <XAxis
+                        dataKey="etiqueta"
+                        stroke="#94a3b8"
+                        fontSize={11}
+                        tickMargin={8}
+                        minTickGap={20}
+                      />
+                      <YAxis
+                        yAxisId="left"
+                        stroke="#fb923c"
+                        fontSize={11}
+                        label={{
+                          value: 'Cantidad de Sismos',
+                          angle: -90,
+                          position: 'insideLeft',
+                          fill: '#fb923c',
+                          fontSize: 11,
+                        }}
+                      />
+                      <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        domain={[0, 9]}
+                        stroke="#f87171"
+                        fontSize={11}
+                        label={{
+                          value: 'Magnitud Máx. (M)',
+                          angle: 90,
+                          position: 'insideRight',
+                          fill: '#f87171',
+                          fontSize: 11,
+                        }}
+                      />
                       <Tooltip
                         contentStyle={{
                           backgroundColor: '#0f172a',
                           borderColor: '#334155',
+                          borderRadius: '12px',
                           fontSize: '12px',
                         }}
                       />
+                      <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }} />
                       <Area
+                        yAxisId="left"
                         type="monotone"
                         dataKey="conteo"
-                        name="Eventos/hora"
+                        name="Cantidad de Sismos"
                         stroke="#f97316"
+                        strokeWidth={2}
                         fillOpacity={1}
-                        fill="url(#colorConteo)"
+                        fill="url(#colorSismos)"
                       />
-                    </AreaChart>
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="mag_max"
+                        name="Magnitud Máxima (M)"
+                        stroke="#ef4444"
+                        strokeWidth={2.5}
+                        dot={{ r: 3, fill: '#ef4444' }}
+                      />
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* Distribución por Magnitud */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <h3 className="text-sm font-bold text-white mb-1">Distribución por Magnitud</h3>
-                <p className="text-xs text-slate-400 mb-4">
-                  Frecuencia de sismos según escala de magnitud
-                </p>
-                <div className="h-60">
+              {/* GRÁFICA 2: Distribución de Sismos por Escala de Magnitud */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                <div className="mb-4">
+                  <h3 className="text-base font-bold text-white">
+                    2. Frecuencia de Sismos según Escala de Magnitud
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Clasifica los sismos desde microsismos menores a M 3.0 hasta terremotos fuertes
+                    y mayores (M 6.0+).
+                  </p>
+                </div>
+
+                <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={stats?.magnitude_distribution || []}>
+                    <BarChart
+                      data={stats?.magnitude_distribution || []}
+                      margin={{ top: 10, right: 15, left: 0, bottom: 15 }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis dataKey="rango" stroke="#94a3b8" fontSize={10} />
-                      <YAxis stroke="#94a3b8" fontSize={10} />
+                      <XAxis
+                        dataKey="rango"
+                        stroke="#cbd5e1"
+                        fontSize={11}
+                        tickMargin={8}
+                      />
+                      <YAxis
+                        stroke="#94a3b8"
+                        fontSize={11}
+                        label={{
+                          value: 'Número de Sismos',
+                          angle: -90,
+                          position: 'insideLeft',
+                          fill: '#94a3b8',
+                          fontSize: 11,
+                        }}
+                      />
                       <Tooltip
                         contentStyle={{
                           backgroundColor: '#0f172a',
                           borderColor: '#334155',
+                          borderRadius: '12px',
                           fontSize: '12px',
                         }}
+                        formatter={(value: any) => [`${value} sismos`, 'Cantidad']}
                       />
-                      <Bar dataKey="conteo" name="Eventos" radius={[6, 6, 0, 0]}>
+                      <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }} />
+                      <Bar
+                        dataKey="conteo"
+                        name="Cantidad de Sismos por Rango"
+                        radius={[8, 8, 0, 0]}
+                      >
                         {(stats?.magnitude_distribution || []).map((_, index) => {
-                          const colors = ['#fbbf24', '#f59e0b', '#f97316', '#ea580c', '#ef4444', '#dc2626'];
+                          const colors = [
+                            '#38bdf8',
+                            '#fbbf24',
+                            '#f59e0b',
+                            '#f97316',
+                            '#ef4444',
+                            '#b91c1c',
+                          ];
                           return <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />;
                         })}
                       </Bar>
@@ -1041,38 +1366,116 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Regiones con Más Actividad */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <h3 className="text-sm font-bold text-white mb-1">
-                  Regiones con Mayor Actividad (`agg_region`)
-                </h3>
-                <p className="text-xs text-slate-400 mb-4">Top regiones por número de eventos</p>
-                <div className="h-60">
+              {/* GRÁFICA 3: Regiones Geográficas con Mayor Actividad y su Magnitud */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                <div className="mb-4">
+                  <h3 className="text-base font-bold text-white">
+                    3. Zonas Geográficas con Mayor Actividad Sísmica
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Ranking de las 8 regiones con mayor cantidad de sismos registrados y su magnitud
+                    máxima alcanzada.
+                  </p>
+                </div>
+
+                <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
+                    <ComposedChart
                       layout="vertical"
-                      data={(stats?.top_regions || []).slice(0, 7)}
-                      margin={{ left: 10, right: 10 }}
+                      data={(stats?.top_regions || []).slice(0, 8)}
+                      margin={{ top: 5, right: 25, left: 15, bottom: 5 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis type="number" stroke="#94a3b8" fontSize={10} />
+                      <XAxis type="number" stroke="#94a3b8" fontSize={11} />
                       <YAxis
                         type="category"
                         dataKey="region"
-                        stroke="#94a3b8"
-                        fontSize={10}
-                        width={105}
+                        stroke="#e2e8f0"
+                        fontSize={11}
+                        width={135}
                       />
                       <Tooltip
                         contentStyle={{
                           backgroundColor: '#0f172a',
                           borderColor: '#334155',
+                          borderRadius: '12px',
                           fontSize: '12px',
                         }}
+                        formatter={(val: any, name: string) => {
+                          if (name.includes('Magnitud')) return [`M ${val}`, name];
+                          return [`${val} sismos`, name];
+                        }}
                       />
-                      <Bar dataKey="conteo" name="Eventos" fill="#fb923c" radius={[0, 6, 6, 0]} />
+                      <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }} />
+                      <Bar
+                        dataKey="conteo"
+                        name="Total de Sismos"
+                        fill="#fb923c"
+                        radius={[0, 8, 8, 0]}
+                        barSize={20}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* GRÁFICA 4: Clasificación por Profundidad Hipocentral (Superficial, Intermedio, Profundo) */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    4. Distribución por Profundidad del Sismo (Hipocentro)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5 mb-4">
+                    Los sismos superficiales (0 a 70 km) generan mayor sacudida en la superficie que
+                    los intermedios o profundos.
+                  </p>
+                </div>
+
+                <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={stats?.depth_distribution || []}
+                      margin={{ top: 5, right: 15, left: 0, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="categoria" stroke="#cbd5e1" fontSize={12} />
+                      <YAxis stroke="#94a3b8" fontSize={11} />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#0f172a',
+                          borderColor: '#334155',
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                        }}
+                        formatter={(value: any) => [`${value} sismos`, 'Cantidad']}
+                      />
+                      <Bar dataKey="conteo" name="Cantidad de Sismos" radius={[8, 8, 0, 0]} barSize={48}>
+                        {(stats?.depth_distribution || []).map((_, idx) => {
+                          const depthColors = ['#10b981', '#6366f1', '#a855f7'];
+                          return <Cell key={`dp-${idx}`} fill={depthColors[idx % depthColors.length]} />;
+                        })}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+
+                {/* Tarjetas de resumen por categoría de profundidad */}
+                <div className="grid grid-cols-3 gap-3 mt-3 pt-3 border-t border-slate-800">
+                  {(stats?.depth_distribution || []).map((d, idx) => (
+                    <div
+                      key={idx}
+                      className="bg-slate-950 border border-slate-800/90 rounded-xl p-2.5 text-xs"
+                    >
+                      <div className="font-bold text-slate-200">{d.categoria}</div>
+                      <div className="text-[10px] text-slate-400">{d.rango_km}</div>
+                      <div className="text-sm font-extrabold text-orange-400 mt-1">
+                        {d.conteo} ({d.porcentaje}%)
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Máx. M {d.mag_max.toFixed(1)}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1080,7 +1483,131 @@ export const App: React.FC = () => {
         )}
 
         {/* ===================================================================
-            PESTAÑA 2: REPORTES DIARIOS DE IA
+            PESTAÑA 2: ASISTENTE SÍSMICO IA (LIMPIO Y ENFOCADO EN SISMOS/DATOS)
+        =================================================================== */}
+        {activeTab === 'chat' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-orange-400" />
+                  <h2 className="text-sm font-bold text-white">Asistente Sísmico SismoWatch</h2>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  En Línea
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Consulta en lenguaje natural (formal o coloquial) sobre terremotos recientes,
+                regiones con mayor actividad, profundidades, alertas de tsunami y tablas
+                estadísticas sincronizadas con el mapa.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="font-bold text-orange-400">Estadísticas</div>
+                  <div className="text-slate-400 mt-0.5">Tablas por magnitud y profundidad</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="font-bold text-red-400">Terremotos</div>
+                  <div className="text-slate-400 mt-0.5">El sismo más fuerte y búsquedas</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="font-bold text-amber-400">Zonas Activas</div>
+                  <div className="text-slate-400 mt-0.5">Ranking de países y regiones</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <div className="font-bold text-sky-400">Tendencias</div>
+                  <div className="text-slate-400 mt-0.5">Actividad por hora y enjambres</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-bold uppercase text-slate-400">
+                    Preguntas Frecuentes Sugeridas
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setChatMessages(buildWelcomeMessage(session.username))}
+                    className="text-[11px] text-orange-400 hover:underline"
+                  >
+                    Limpiar conversación
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {SEISMIC_SUGGESTED_QUESTIONS.map((q, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSendChat(q)}
+                      disabled={chatLoading}
+                      className="w-full text-left px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-200 transition"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col h-[600px]">
+              <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+                {chatMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex flex-col ${
+                      msg.sender === 'user' ? 'items-end' : 'items-start'
+                    }`}
+                  >
+                    <div
+                      className={`max-w-[90%] rounded-2xl p-4 text-xs leading-relaxed ${
+                        msg.sender === 'user'
+                          ? 'bg-orange-600 text-white whitespace-pre-wrap'
+                          : 'bg-slate-950 border border-slate-800 text-slate-100'
+                      }`}
+                    >
+                      {msg.sender === 'agent' ? renderFormattedChatText(msg.text) : msg.text}
+                      <div className="mt-2 text-[10px] opacity-60 text-right">{msg.ts}</div>
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="text-xs text-slate-400 animate-pulse">
+                    Consultando datos sísmicos y preparando tabla...
+                  </div>
+                )}
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSendChat();
+                }}
+                className="mt-4 flex items-center gap-2 pt-3 border-t border-slate-800"
+              >
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Pregunta sobre sismos, estadísticas, regiones activas, magnitudes o tsunamis..."
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 focus:outline-none focus:border-orange-500"
+                />
+                <button
+                  type="submit"
+                  disabled={chatLoading || !chatInput.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  Preguntar
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            PESTAÑA 3: BOLETINES SÍSMICOS DIARIOS
         =================================================================== */}
         {activeTab === 'reports' && (
           <div className="space-y-6">
@@ -1092,7 +1619,7 @@ export const App: React.FC = () => {
                     type="text"
                     value={reportSearch}
                     onChange={(e) => setReportSearch(e.target.value)}
-                    placeholder="Buscar en reportes por región, fecha o proveedor..."
+                    placeholder="Buscar boletín por región o fecha..."
                     className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200"
                   />
                 </div>
@@ -1118,14 +1645,14 @@ export const App: React.FC = () => {
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Exportar CSV
+                  Descargar CSV
                 </button>
                 <button
                   onClick={() => apiClient.downloadExport('html')}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold transition"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Exportar HTML / PDF
+                  Descargar Reporte Imprimible
                 </button>
               </div>
             </div>
@@ -1138,14 +1665,12 @@ export const App: React.FC = () => {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-                <h2 className="text-sm font-bold text-white">
-                  Historial de Reportes (`curated.daily_reports`)
-                </h2>
+                <h2 className="text-sm font-bold text-white">Historial de Boletines Sísmicos</h2>
                 {reportsLoading ? (
                   <div className="h-40 rounded-xl bg-slate-950 animate-pulse" />
                 ) : reports.length === 0 ? (
                   <div className="text-xs text-slate-400 p-6 text-center">
-                    Aún no hay reportes generados para este criterio.
+                    No hay boletines disponibles para este criterio.
                   </div>
                 ) : (
                   reports.map((rep) => (
@@ -1159,18 +1684,14 @@ export const App: React.FC = () => {
                       }`}
                     >
                       <div className="flex items-center justify-between text-xs font-bold text-white">
-                        <span>{rep.fecha}</span>
-                        <span className="px-2 py-0.5 rounded bg-slate-800 text-orange-300 font-mono text-[10px]">
-                          {rep.proveedor}
+                        <span>Corte del {rep.fecha}</span>
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px]">
+                          Verificado
                         </span>
                       </div>
                       <p className="text-xs text-slate-300 mt-1 line-clamp-2">
-                        {rep.resumen_ejecutivo}
+                        {cleanInlineText(rep.resumen_ejecutivo)}
                       </p>
-                      <div className="text-[10px] text-slate-500 mt-1.5 flex items-center justify-between">
-                        <span>Prompt: {rep.version_prompt}</span>
-                        <span>{rep.fallback ? 'Respaldo determinista' : 'LLM Primario'}</span>
-                      </div>
                     </button>
                   ))
                 )}
@@ -1182,24 +1703,16 @@ export const App: React.FC = () => {
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-4">
                       <div>
                         <span className="text-xs text-orange-400 font-bold uppercase">
-                          Reporte Ejecutivo Validado • {selectedReport.fecha}
+                          Boletín Sísmico Diario • {selectedReport.fecha}
                         </span>
                         <h2 className="text-lg font-extrabold text-white mt-0.5">
                           {selectedReport.titulo}
                         </h2>
                       </div>
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-200">
-                          Proveedor: <strong>{selectedReport.proveedor}</strong>
-                        </span>
-                        <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300">
-                          {selectedReport.version_prompt}
-                        </span>
-                      </div>
                     </div>
 
                     <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-sm text-slate-200 leading-relaxed">
-                      {selectedReport.resumen_ejecutivo}
+                      {renderFormattedChatText(selectedReport.resumen_ejecutivo)}
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1217,7 +1730,7 @@ export const App: React.FC = () => {
                       </div>
                       <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
                         <h3 className="text-xs font-bold uppercase text-red-400 mb-2">
-                          Eventos Destacados
+                          Sismos Destacados
                         </h3>
                         <ul className="space-y-1.5 text-xs text-slate-300 list-disc list-inside">
                           {(selectedReport.json_validado.eventos_destacados || []).map(
@@ -1231,18 +1744,18 @@ export const App: React.FC = () => {
 
                     <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 space-y-2">
                       <div>
-                        <strong className="text-amber-400">Análisis de Anomalías: </strong>
+                        <strong className="text-amber-400">Comportamiento y Anomalías: </strong>
                         {selectedReport.json_validado.analisis_anomalias}
                       </div>
                       <div>
-                        <strong className="text-emerald-400">Recomendaciones: </strong>
+                        <strong className="text-emerald-400">Recomendación de Vigilancia: </strong>
                         {selectedReport.json_validado.recomendaciones}
                       </div>
                     </div>
                   </div>
                 ) : (
                   <div className="text-center text-slate-400 text-xs py-12">
-                    Selecciona un reporte de la lista para visualizar su detalle completo.
+                    Selecciona un boletín de la lista para visualizar su detalle completo.
                   </div>
                 )}
               </div>
@@ -1251,7 +1764,7 @@ export const App: React.FC = () => {
         )}
 
         {/* ===================================================================
-            PESTAÑA 3: ESTADO DEL PIPELINE
+            PESTAÑA 4: ESTADO DE ACTUALIZACIÓN DEL SERVICIO
         =================================================================== */}
         {activeTab === 'pipeline' && (
           <div className="space-y-6">
@@ -1259,13 +1772,10 @@ export const App: React.FC = () => {
               <div>
                 <h2 className="text-base font-bold text-white flex items-center gap-2">
                   <Layers className="w-5 h-5 text-orange-400" />
-                  Estado de Orquestación Apache Airflow y Frescura de Datos
+                  Estado Operativo y Frescura de Datos Sísmicos
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Vista adaptada al rol actual (<strong>{session.role}</strong>):{' '}
-                  {session.role === 'admin'
-                    ? 'Detalle administrativo completo habilitado.'
-                    : 'Resumen operativo de frescura y DAGs.'}
+                  Monitoreo automático del catálogo sísmico global cada 5 minutos.
                 </p>
               </div>
               <button
@@ -1273,7 +1783,7 @@ export const App: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center gap-1.5"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${pipelineLoading ? 'animate-spin' : ''}`} />
-                Refrescar Estado
+                Actualizar Estado
               </button>
             </div>
 
@@ -1287,30 +1797,30 @@ export const App: React.FC = () => {
               <>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Salud Global Pipeline</span>
+                    <span className="text-xs text-slate-400">Estado del Servicio</span>
                     <div className="mt-1 flex items-center gap-2">
                       <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                       <span className="text-lg font-extrabold text-white">
-                        {pipelineStatus.overall_status}
+                        {pipelineStatus.overall_status === 'HEALTHY' ? 'Operativo' : pipelineStatus.overall_status}
                       </span>
                     </div>
                   </div>
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Frescura del Dato</span>
+                    <span className="text-xs text-slate-400">Antigüedad del Último Corte</span>
                     <div className="mt-1 text-lg font-extrabold text-white">
                       {pipelineStatus.freshness_minutes} min
                     </div>
                   </div>
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Puntaje Calidad Lote</span>
+                    <span className="text-xs text-slate-400">Calidad de Datos Validados</span>
                     <div className="mt-1 text-lg font-extrabold text-emerald-400">
                       {pipelineStatus.quality_score}%
                     </div>
                   </div>
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Versión Oro (`data_version`)</span>
-                    <div className="mt-1 text-sm font-mono font-bold text-orange-300 truncate">
-                      {pipelineStatus.data_version}
+                    <span className="text-xs text-slate-400">Frecuencia de Sincronización</span>
+                    <div className="mt-1 text-sm font-bold text-orange-300">
+                      Cada 5 minutos
                     </div>
                   </div>
                 </div>
@@ -1322,7 +1832,7 @@ export const App: React.FC = () => {
                       className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-mono text-sm font-bold text-white">{dag.dag_id}</span>
+                        <span className="text-sm font-bold text-white">{dag.dag_id}</span>
                         <span
                           className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
                             dag.estado === 'SUCCESS'
@@ -1332,14 +1842,14 @@ export const App: React.FC = () => {
                               : 'bg-red-500/20 text-red-300 border border-red-500/30'
                           }`}
                         >
-                          {dag.estado}
+                          {dag.estado === 'SUCCESS' ? 'Completado' : dag.estado}
                         </span>
                       </div>
                       <p className="text-xs text-slate-300">{dag.resultado}</p>
                       <div className="text-[11px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-800/80">
-                        <span>Run: {dag.run_id}</span>
+                        <span>Última ejecución</span>
                         <span>
-                          {dag.fin ? new Date(dag.fin).toLocaleString() : 'En ejecución'}
+                          {dag.fin ? new Date(dag.fin).toLocaleString() : 'En proceso'}
                         </span>
                       </div>
                     </div>
@@ -1351,123 +1861,7 @@ export const App: React.FC = () => {
         )}
 
         {/* ===================================================================
-            PESTAÑA 4: AGENTE CONVERSACIONAL DE IA
-        =================================================================== */}
-        {activeTab === 'chat' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center gap-2.5">
-                <Sparkles className="w-5 h-5 text-orange-400" />
-                <h2 className="text-sm font-bold text-white">Arquitectura en Cascada (4 Niveles)</h2>
-              </div>
-              <div className="space-y-2 text-xs text-slate-300">
-                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                  <strong className="text-emerald-400">Nivel 0 (Sin LLM):</strong> Intents en Python y
-                  FAQ extensa de 13 categorías (regex + fuzzy match).
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                  <strong className="text-sky-400">Nivel 1 (Sin LLM):</strong> Caché exacta (SHA-256)
-                  y semántica (`bge-m3` pgvector) ligada a `data_version`.
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                  <strong className="text-orange-400">Nivel 2 (Con LLM + Skills):</strong> Ejecuta 1
-                  de las 9 skills en SQL/Python y redacta verificando cifras.
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                  <strong className="text-purple-400">Nivel 3 (Respaldo):</strong> Plantilla
-                  determinista con datos exactos de la skill si el LLM falla.
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-xs font-bold uppercase text-slate-400 mb-2">
-                  Consultas Rápidas de Prueba
-                </h3>
-                <div className="space-y-1.5">
-                  {SUGGESTED_QUESTIONS.map((q, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSendChat(q)}
-                      disabled={chatLoading}
-                      className="w-full text-left px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-200 transition"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col h-[580px]">
-              <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-                {chatMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`flex flex-col ${
-                      msg.sender === 'user' ? 'items-end' : 'items-start'
-                    }`}
-                  >
-                    <div
-                      className={`max-w-[85%] rounded-2xl p-4 text-xs leading-relaxed whitespace-pre-wrap ${
-                        msg.sender === 'user'
-                          ? 'bg-orange-600 text-white'
-                          : 'bg-slate-950 border border-slate-800 text-slate-100'
-                      }`}
-                    >
-                      {msg.text}
-                      {msg.meta && (
-                        <div className="mt-3 pt-2.5 border-t border-slate-800 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
-                          <span className="px-2 py-0.5 rounded bg-slate-900 text-orange-300 font-semibold border border-slate-700">
-                            {msg.meta.level_label}
-                          </span>
-                          {msg.meta.skill_used && (
-                            <span className="px-2 py-0.5 rounded bg-slate-900 text-sky-300 font-mono">
-                              Skill: {msg.meta.skill_used}
-                            </span>
-                          )}
-                          <span>Latencia: {msg.meta.latency_ms} ms</span>
-                          <span>Versión: {msg.meta.data_version}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="text-xs text-slate-400 animate-pulse">
-                    Evaluando cascada N0 → N1 → N2 → N3...
-                  </div>
-                )}
-              </div>
-
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSendChat();
-                }}
-                className="mt-4 flex items-center gap-2 pt-3 border-t border-slate-800"
-              >
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="Pregunta sobre sismos, regiones, anomalías, FAQ o escribe SELECT ... FROM curated.events LIMIT 5"
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-100 focus:outline-none focus:border-orange-500"
-                />
-                <button
-                  type="submit"
-                  disabled={chatLoading || !chatInput.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  Enviar
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* ===================================================================
-            PESTAÑA 5: PANEL ADMIN (ESTRICTAMENTE OCULTO PARA VIEWER)
+            PESTAÑA 5: PANEL DE ADMINISTRACIÓN (SOLO ROL ADMIN)
         =================================================================== */}
         {activeTab === 'admin' && session.role === 'admin' && (
           <div className="space-y-6">
@@ -1485,16 +1879,15 @@ export const App: React.FC = () => {
               </div>
             )}
 
-            {/* Acciones Administrativas */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
                 <h2 className="text-sm font-bold text-white flex items-center gap-2">
                   <Database className="w-4 h-4 text-orange-400" />
-                  Disparar Backfill Histórico (`usgs_backfill` vía Airflow REST)
+                  Recargar Catálogo Histórico de Sismos
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Descarga por tramos desde `fdsnws/event/1/query`, transforma en Spark con
-                  sobrescritura dinámica de partición y hace upsert idempotente en `curated`.
+                  Actualiza el historial sísmico desde USGS para la cantidad de días y magnitud
+                  mínima seleccionadas.
                 </p>
                 <div className="flex items-end gap-3">
                   <div>
@@ -1524,7 +1917,7 @@ export const App: React.FC = () => {
                     className="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold flex items-center gap-1.5"
                   >
                     <Play className="w-3.5 h-3.5" />
-                    Lanzar Backfill
+                    Ejecutar Recarga
                   </button>
                 </div>
               </div>
@@ -1532,11 +1925,11 @@ export const App: React.FC = () => {
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
                 <h2 className="text-sm font-bold text-white flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-orange-400" />
-                  Regenerar Reporte Ejecutivo Diario de IA
+                  Actualizar Boletín Sísmico Diario
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Recalcula las cifras SQL del día, verifica la no invención numérica y actualiza
-                  `curated.daily_reports` además de disparar `usgs_ai_daily`.
+                  Recalcula las estadísticas del día y genera una nueva versión del boletín
+                  ejecutivo diario.
                 </p>
                 <button
                   onClick={handleRegenerateReport}
@@ -1544,25 +1937,23 @@ export const App: React.FC = () => {
                   className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${adminLoading ? 'animate-spin' : ''}`} />
-                  Regenerar Reporte Diario Ahora
+                  Actualizar Boletín Ahora
                 </button>
               </div>
             </div>
 
-            {/* Registro de Auditoría de Rechazos por Calidad (Sin tabla de cuarentena pesada) */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-sm font-bold text-white">
-                    Auditoría de Calidad y Log de Rechazos (`curated.quality_results`)
+                    Control de Calidad de Lotes Recientes
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Sin tabla de cuarentena duplicada: el JSON crudo permanece inmutable en MinIO
-                    Bronce y aquí se audita `{`{id, regla, motivo}`}` por lote.
+                    Resumen de validaciones aplicadas a los datos sísmicos recibidos.
                   </p>
                 </div>
                 <span className="px-3 py-1 rounded-xl bg-slate-950 border border-slate-800 text-xs text-orange-300 font-bold">
-                  Total rechazados auditados: {quarantine?.total_rejected_rows ?? 0}
+                  Registros descartados: {quarantine?.total_rejected_rows ?? 0}
                 </span>
               </div>
 
@@ -1570,13 +1961,13 @@ export const App: React.FC = () => {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400">
-                      <th className="py-2 px-3">Run ID</th>
-                      <th className="py-2 px-3">Timestamp</th>
+                      <th className="py-2 px-3">Lote</th>
+                      <th className="py-2 px-3">Fecha y Hora</th>
                       <th className="py-2 px-3">Evaluadas</th>
                       <th className="py-2 px-3">Aprobadas</th>
-                      <th className="py-2 px-3">Rechazadas</th>
+                      <th className="py-2 px-3">Descartadas</th>
                       <th className="py-2 px-3">Puntaje</th>
-                      <th className="py-2 px-3">Detalle de Rechazos (`id / regla / motivo`)</th>
+                      <th className="py-2 px-3">Observaciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1594,12 +1985,12 @@ export const App: React.FC = () => {
                         <td className="py-2.5 px-3 font-bold">{b.puntaje}%</td>
                         <td className="py-2.5 px-3 text-slate-300">
                           {b.rechazos_log.length === 0 ? (
-                            <span className="text-emerald-400">0 rechazos en este lote</span>
+                            <span className="text-emerald-400">100% válido</span>
                           ) : (
                             <div className="space-y-1 max-h-28 overflow-y-auto">
                               {b.rechazos_log.slice(0, 5).map((r, i) => (
-                                <div key={i} className="text-[11px] font-mono text-red-300">
-                                  [{r.id}] <strong>{r.regla}</strong>: {r.motivo}
+                                <div key={i} className="text-[11px] text-red-300">
+                                  [{r.id}] {r.regla}: {r.motivo}
                                 </div>
                               ))}
                             </div>

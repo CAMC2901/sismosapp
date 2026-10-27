@@ -326,3 +326,4 @@ def publish_gold_from_minio_to_postgres(
         run_id=run_id,
         dag_id=dag_id,
     )
+

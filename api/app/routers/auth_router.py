@@ -26,3 +26,4 @@ async def login(payload: LoginRequest) -> TokenResponse:
         expires_in_minutes=s.jwt_expire_minutes,
         user=user,
     )
+

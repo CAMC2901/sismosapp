@@ -38,3 +38,4 @@ REVOKE ALL ON SCHEMA staging FROM reader_role, api_rw_role, ai_role, ingest_role
 GRANT USAGE ON SCHEMA raw TO ingest_role, transform_role;
 GRANT USAGE ON SCHEMA staging TO transform_role;
 GRANT USAGE ON SCHEMA curated TO transform_role, ai_role, reader_role, api_rw_role;
+

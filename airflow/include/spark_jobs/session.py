@@ -46,3 +46,4 @@ def create_spark_session(app_name: str = "SismoWatch-Medallion") -> SparkSession
         .config("spark.hadoop.fs.s3a.attempts.maximum", "3")
     )
     return builder.getOrCreate()
+

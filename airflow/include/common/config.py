@@ -91,3 +91,4 @@ def get_db_connection(role: str = "reader", connect_timeout: int = 10) -> PgConn
         password=password,
         connect_timeout=connect_timeout,
     )
+

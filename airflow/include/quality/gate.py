@@ -128,7 +128,8 @@ def evaluate_batch_quality_gate(
     """
     cfg = get_config()
     approved_count = len(valid_df)
-    rejected_count = len(rejections_log)
+    domain_rejections = [r for r in rejections_log if r.get("regla") != "duplicate_id"]
+    rejected_count = len(domain_rejections)
     total_count = approved_count + rejected_count
     evaluated_rules = total_count if total_count > 0 else 1
     score = (approved_count / total_count) if total_count > 0 else 1.0
@@ -210,3 +211,4 @@ def evaluate_batch_quality_gate(
     }
     log_event(logger, "info", "quality_gate_passed", run_id, result)
     return result
+

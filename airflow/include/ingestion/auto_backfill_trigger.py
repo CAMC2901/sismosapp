@@ -120,3 +120,4 @@ def trigger_initial_backfill_if_needed() -> None:
 
 if __name__ == "__main__":
     trigger_initial_backfill_if_needed()
+

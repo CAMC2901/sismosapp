@@ -167,3 +167,4 @@ def test_ai_numbers_verification_and_prompt_sanitization():
     assert "<script>" not in clean
     assert derive_region("25 km SSW of Antofagasta, Chile") == "Chile"
     assert compute_deterministic_chunk_id("event", "abc") == compute_deterministic_chunk_id("event", "abc")
+

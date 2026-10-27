@@ -35,3 +35,4 @@ RUN PYSPARK_JARS_DIR=$(python3 -c "import pyspark, os; print(os.path.join(os.pat
         -o "${PYSPARK_JARS_DIR}/aws-java-sdk-bundle-1.12.262.jar" && \
     curl -fSL https://jdbc.postgresql.org/download/postgresql-42.7.4.jar \
         -o "${PYSPARK_JARS_DIR}/postgresql-42.7.4.jar"
+

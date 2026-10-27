@@ -131,3 +131,4 @@ def execute_safe_sql(sql: str) -> Dict[str, Any]:
                 }
     finally:
         conn.close()
+
